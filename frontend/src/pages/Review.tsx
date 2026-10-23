@@ -210,7 +210,9 @@ export default function Review({ setContent: setPropContent }: Props = {}) {
 
               {!resolvedIds.includes(1) && (
                 <button
-                  ref={(el) => (markerRefs.current[1] = el)}
+                  ref={(el) => {
+                    markerRefs.current[1] = el;
+                  }}
                   type="button"
                   className={`issue-marker marker-one ${selectedId === 1 ? "marker-active" : ""}`}
                   onClick={() => openFix(findings[0])}
@@ -222,7 +224,9 @@ export default function Review({ setContent: setPropContent }: Props = {}) {
 
               {!resolvedIds.includes(2) && (
                 <button
-                  ref={(el) => (markerRefs.current[2] = el)}
+                  ref={(el) => {
+                    markerRefs.current[2] = el;
+                  }}
                   type="button"
                   className={`issue-marker marker-two ${selectedId === 2 ? "marker-active" : ""}`}
                   onClick={() => openFix(findings[1])}
@@ -234,7 +238,9 @@ export default function Review({ setContent: setPropContent }: Props = {}) {
 
               {!resolvedIds.includes(3) && (
                 <button
-                  ref={(el) => (markerRefs.current[3] = el)}
+                  ref={(el) => {
+                    markerRefs.current[3] = el;
+                  }}
                   type="button"
                   className={`issue-marker marker-three ${selectedId === 3 ? "marker-active" : ""}`}
                   onClick={() => openFix(findings[2])}
