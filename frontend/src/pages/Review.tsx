@@ -1,306 +1,381 @@
-import { useState } from "react";
-import {
-  ArrowRight,
-  Check,
-  FileText,
-  Image,
-  ScanSearch,
-  ShieldCheck,
-  Sparkles,
-} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Sparkles, ShieldCheck, Check, ArrowRight } from "lucide-react";
 import IssueCard, { type Finding } from "../components/IssueCard";
 
 type Props = {
-  content: string;
-  setContent: (value: string) => void;
-  reviewStarted: boolean;
-  onReview: () => void;
+  content?: string;
+  setContent?: (value: string) => void;
+  reviewStarted?: boolean;
+  onReview?: () => void;
 };
 
-const demoFindings: Finding[] = [
+const initialFindings: Finding[] = [
   {
     id: 1,
-    title: "Unsupported promotional claim",
+    title: "Absolute superiority claim",
     severity: "High",
-    location: "Finding 01 · Headline",
-    explanation:
-      "The headline makes a strong performance promise, but the supplied brand references do not establish evidence for that claim. A reviewer should verify it before publication.",
-    evidence:
-      "Example brand rule: promotional performance claims must have an approved source and substantiation.",
-    suggestion:
-      "Replace the absolute promise with a specific, approved benefit or attach evidence that substantiates the claim.",
+    location: "Headline claim",
+    explanation: "Absolute perfection guarantees need verified clinical trials and legal clearance.",
+    evidence: "Brand Guideline §4.2: Avoid superlative and absolute claims without certified trial results.",
+    suggestion: "visibly enhances radiance with pure botanical care.",
   },
   {
     id: 2,
-    title: "Messaging needs alignment",
+    title: "Unsubstantiated timeframe",
     severity: "Medium",
-    location: "Finding 02 · Body copy",
-    explanation:
-      "This wording may not match the brand's preferred terminology. Check the approved messaging guide before finalising the text.",
-    evidence:
-      "Example brand rule: use approved product terminology and consistent messaging across channels.",
-    suggestion:
-      "Use the terminology from the approved messaging guide and retain the intended meaning of the original copy.",
+    location: "Body copy claim",
+    explanation: "A specific 7-day reversal claim exceeds current approved product study data.",
+    evidence: "Clinical dossier #2024-B confirms improvement at 28 days, not 7 days.",
+    suggestion: "support natural renewal with continuous daily use",
   },
   {
     id: 3,
-    title: "Final review required",
+    title: "Comparative claim without citation",
     severity: "Low",
-    location: "Finding 03 · Publication",
-    explanation:
-      "The content has not yet been confirmed by an authorised reviewer. This is a workflow reminder, not a detected content error.",
-    evidence:
-      "Example workflow rule: content must receive the required approval before publication.",
-    suggestion:
-      "Send the revised content to the appropriate reviewer and record the approval decision.",
+    location: "Supporting copy",
+    explanation: "Direct competitor comparisons require explicit disclaimers and benchmark testing.",
+    evidence: "Advertising Standards Compliance Guide §8.",
+    suggestion: "Designed to complement and elevate your daily skincare routine.",
   },
 ];
 
-export default function Review({
-  content,
-  setContent,
-  reviewStarted,
-  onReview,
-}: Props) {
-  const [selectedFinding, setSelectedFinding] = useState(1);
-  const [approved, setApproved] = useState(false);
-  const [showEditor, setShowEditor] = useState(false);
+export default function Review({ setContent: setPropContent }: Props = {}) {
+  const [headlineFix, setHeadlineFix] = useState("100% organic, pure skin perfection.");
+  const [bodyPart2Fix, setBodyPart2Fix] = useState("reverse signs of aging in 7 days");
+  const [bodyPart3Fix, setBodyPart3Fix] = useState("No other cream works better.");
 
-  const hasContent = Boolean(content.trim());
-  const findings = hasContent && reviewStarted ? demoFindings : [];
-  const selected = findings.find((item) => item.id === selectedFinding);
+  const [findings] = useState<Finding[]>(initialFindings);
+  const [selectedId, setSelectedId] = useState<number | null>(2);
+  const [replacement, setReplacement] = useState("");
+  const [resolvedIds, setResolvedIds] = useState<number[]>([]);
+  const [connectorPath, setConnectorPath] = useState("");
+
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const markerRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+
+  const fullHeadline = `Radiance redefined: ${headlineFix}`;
+  const fullBody = `Formulated without parabens or synthetics. Clinically proven to ${bodyPart2Fix}. ${bodyPart3Fix}`;
+
+  const selectedFinding = findings.find((f) => f.id === selectedId) ?? null;
+
+  useEffect(() => {
+    if (selectedFinding) {
+      setReplacement(selectedFinding.suggestion);
+    }
+  }, [selectedId]);
+
+  useEffect(() => {
+    function updateConnector() {
+      if (!selectedId || !workspaceRef.current || !panelRef.current) {
+        setConnectorPath("");
+        return;
+      }
+
+      const markerEl = markerRefs.current[selectedId];
+      if (!markerEl) {
+        setConnectorPath("");
+        return;
+      }
+
+      const wsRect = workspaceRef.current.getBoundingClientRect();
+      const mRect = markerEl.getBoundingClientRect();
+      const pRect = panelRef.current.getBoundingClientRect();
+
+      const startX = mRect.left + mRect.width / 2 - wsRect.left;
+      const startY = mRect.bottom - wsRect.top;
+      const endX = pRect.left + 35 - wsRect.left;
+      const endY = pRect.top - wsRect.top;
+
+      const midY = (startY + endY) / 2;
+      setConnectorPath(`M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`);
+    }
+
+    updateConnector();
+    window.addEventListener("resize", updateConnector);
+    return () => window.removeEventListener("resize", updateConnector);
+  }, [selectedId, headlineFix, bodyPart2Fix, bodyPart3Fix]);
+
+  function openFix(finding: Finding) {
+    setSelectedId(finding.id);
+    setReplacement(finding.suggestion);
+  }
+
+  function applyFix() {
+    if (!selectedFinding || resolvedIds.includes(selectedFinding.id)) return;
+
+    if (selectedFinding.id === 1) {
+      setHeadlineFix(replacement);
+    } else if (selectedFinding.id === 2) {
+      setBodyPart2Fix(replacement);
+    } else if (selectedFinding.id === 3) {
+      setBodyPart3Fix(replacement);
+    }
+
+    setResolvedIds((prev) => [...prev, selectedFinding.id]);
+    setSelectedId(null);
+    setPropContent?.(fullBody);
+  }
+
+  const unresolvedCount = findings.length - resolvedIds.length;
 
   return (
-    <div className="page review-page">
+    <div className="page">
       <div className="page-heading">
         <div>
-          <p className="eyebrow">CONTENT WORKSPACE</p>
-          <h1>Review <span>before release.</span></h1>
-          <p className="muted">
-            Explore findings in context, not buried in a checklist.
-          </p>
+          <p className="eyebrow">CONTENT AUDIT</p>
+          <h1>Review & <span>alignment.</span></h1>
+          <p className="muted">Inspect flagged claims, apply fixes, and approve for release.</p>
         </div>
-        <span className="workspace-icon"><ScanSearch size={24} /></span>
+        <span className="workspace-icon"><Sparkles size={24} /></span>
       </div>
 
-      <section className="input-panel review-input">
-        <div className="panel-title">
-          <span className="type-icon cyan"><FileText size={19} /></span>
+      <div className="review-summary">
+        <div>
+          <span className="summary-number">{unresolvedCount}</span>
           <div>
-            <h3>Your draft</h3>
-            <p className="muted">Paste the content you want to review.</p>
+            <strong>Active findings</strong>
+            <p className="muted">Issues requiring review</p>
           </div>
         </div>
+        <span className="demo-badge">PRE-FLIGHT AUDIT</span>
+      </div>
 
-        <textarea
-          value={content}
-          onChange={(event) => {
-            setContent(event.target.value);
-            setApproved(false);
-          }}
-          rows={3}
-          placeholder="Paste campaign copy, an announcement, or product messaging..."
-        />
+      <div className="review-layout">
+        <section className="review-visual-workspace" ref={workspaceRef}>
+          {selectedFinding && !resolvedIds.includes(selectedFinding.id) && connectorPath && (
+            <svg className="review-connector" aria-hidden="true">
+              <defs>
+                <marker
+                  id="connector-arrow"
+                  viewBox="0 0 10 10"
+                  refX="6"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto"
+                >
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--cyan)" />
+                </marker>
+              </defs>
+              <path d={connectorPath} markerEnd="url(#connector-arrow)" />
+            </svg>
+          )}
 
-        <div className="input-footer">
-          <span className="muted">{content.length} characters</span>
-          <button
-            className="primary-button"
-            onClick={() => {
-              setSelectedFinding(1);
-              setApproved(false);
-              onReview();
-            }}
-            disabled={!hasContent}
-          >
-            <Sparkles size={16} /> Run demo review
-          </button>
-        </div>
-      </section>
-
-      {!reviewStarted || !hasContent ? (
-        <section className="empty-state">
-          <div className="empty-icon"><ScanSearch size={30} /></div>
-          <h2>Your visual review starts here</h2>
-          <p>
-            Add content above, then run the demo review to explore how
-            visual findings and evidence-linked explanations will work.
-          </p>
-        </section>
-      ) : (
-        <>
-          <div className="review-summary">
-            <div>
-              <span className="summary-number">03</span>
-              <span className="muted">Illustrative findings</span>
-            </div>
-            <span className="demo-badge">DEMO DATA</span>
-          </div>
-
-          <div className="review-layout">
-            <section className="preview-column">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">01 / IN CONTEXT</p>
-                  <h2>Content preview</h2>
-                </div>
-                <span className="preview-tag"><Image size={14} /> Draft</span>
-              </div>
-
-              <div className="creative-preview">
-                <div className="creative-topline">
-                  <span>CAMPAIGN DRAFT</span>
-                  <span>NOT APPROVED</span>
-                </div>
-
-                <div className="creative-art">
-                  <div className="creative-decoration" />
-                  <span className="creative-kicker">YOUR BRAND. YOUR STORY.</span>
-                  <h2>
-                    {content.split("\n")[0].slice(0, 100) ||
-                      "Make every moment extraordinary."}
-                  </h2>
-                  <p>{content.split("\n").slice(1).join(" ").slice(0, 180) ||
-                    "Your campaign copy will appear here for review."}</p>
-
-                  <button
-                    className={`issue-marker marker-one ${selectedFinding === 1 ? "marker-active" : ""}`}
-                    onClick={() => setSelectedFinding(1)}
-                    aria-label="Show finding one"
-                  >
-                    1
-                  </button>
-                  <button
-                    className={`issue-marker marker-two ${selectedFinding === 2 ? "marker-active" : ""}`}
-                    onClick={() => setSelectedFinding(2)}
-                    aria-label="Show finding two"
-                  >
-                    2
-                  </button>
-                  <button
-                    className={`issue-marker marker-three ${selectedFinding === 3 ? "marker-active" : ""}`}
-                    onClick={() => setSelectedFinding(3)}
-                    aria-label="Show finding three"
-                  >
-                    3
-                  </button>
-                </div>
-
-                <div className="preview-legend">
-                  <span><i className="legend-high" /> High</span>
-                  <span><i className="legend-medium" /> Medium</span>
-                  <span><i className="legend-low" /> Workflow</span>
-                </div>
-              </div>
-
-              
-            <div className="selected-insight">
-            <span className="insight-icon">
-                <Sparkles size={17} />
-            </span>
-
-            <div>
-                <strong>{selected?.title ?? "Select a finding"}</strong>
-                <p>
-                {selected?.explanation ??
-                    "Choose a marker to inspect a finding."}
-                </p>
-
-                {selected && (
-                <>
-                    <p className="muted">
-                    <strong>Suggested fix:</strong> {selected.suggestion}
-                    </p>
-
-                    <button
-                    className="secondary-button"
-                    onClick={() => {
-                        setContent(
-                        content.trimEnd() +
-                            "\n\nSuggested revision: " +
-                            selected.suggestion
-                        );
-                        setApproved(false);
-                        setShowEditor(true);
-                    }}
-                    >
-                    Use suggestion <ArrowRight size={16} />
-                    </button>
-                </>
-                )}
-            </div>
+          <div className="creative-preview">
+            <div className="creative-topline">
+              <span>CAMPAIGN COPY & CREATIVE</span>
+              <span>{resolvedIds.length} OF {findings.length} RESOLVED</span>
             </div>
 
-            </section>
+            <div className="creative-art">
+              <div className="creative-decoration" />
+              <span className="creative-kicker">SPRING HERO ASSET</span>
 
-            <section className="findings-column">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">02 / EXPLORE</p>
-                  <h2>Review findings</h2>
-                </div>
-                <span className="finding-count">{findings.length}</span>
-              </div>
+              <h2>
+                Radiance redefined:{" "}
+                <button
+                  type="button"
+                  className={`review-issue-text ${selectedId === 1 ? "active" : ""} ${
+                    resolvedIds.includes(1) ? "resolved" : ""
+                  }`}
+                  onClick={() => openFix(findings[0])}
+                >
+                  {headlineFix}
+                </button>
+              </h2>
 
-              <div className="issue-list">
-                {findings.map((finding) => (
-                  <IssueCard
-                    key={finding.id}
-                    finding={finding}
-                    selected={selectedFinding === finding.id}
-                    onSelect={() => setSelectedFinding(finding.id)}
-                  />
-                ))}
-              </div>
-
-              <button
-                className="secondary-button editor-toggle"
-                onClick={() => setShowEditor(!showEditor)}
-              >
-                {showEditor ? "Hide revision editor" : "Open revision editor"}
-                <ArrowRight size={16} />
-              </button>
-
-              {showEditor && (
-                <div className="revision-editor">
-                  <h3>Revise your draft</h3>
-                  <p className="muted">
-                    Make a change, then submit it for human review. No AI
-                    corrections are automatically applied in this prototype.
-                  </p>
-                  <textarea
-                    value={content}
-                    onChange={(event) => {
-                      setContent(event.target.value);
-                      setApproved(false);
-                    }}
-                    rows={5}
-                  />
-                </div>
-              )}
-            </section>
-          </div>
-
-          <section className="approval-panel">
-            <div className="approval-icon"><ShieldCheck size={23} /></div>
-            <div className="approval-copy">
-              <h3>{approved ? "Marked for review" : "Ready for the next step?"}</h3>
-              <p className="muted">
-                {approved
-                  ? "Your draft is marked as ready for human review in this prototype."
-                  : "Mark the draft as ready for a human reviewer. This does not mean the content has been approved."}
+              <p>
+                Formulated without parabens or synthetics. Clinically proven to{" "}
+                <button
+                  type="button"
+                  className={`review-issue-text medium ${selectedId === 2 ? "active" : ""} ${
+                    resolvedIds.includes(2) ? "resolved" : ""
+                  }`}
+                  onClick={() => openFix(findings[1])}
+                >
+                  {bodyPart2Fix}
+                </button>
+                .{" "}
+                <button
+                  type="button"
+                  className={`review-issue-text low ${selectedId === 3 ? "active" : ""} ${
+                    resolvedIds.includes(3) ? "resolved" : ""
+                  }`}
+                  onClick={() => openFix(findings[2])}
+                >
+                  {bodyPart3Fix}
+                </button>
               </p>
+
+              {!resolvedIds.includes(1) && (
+                <button
+                  ref={(el) => (markerRefs.current[1] = el)}
+                  type="button"
+                  className={`issue-marker marker-one ${selectedId === 1 ? "marker-active" : ""}`}
+                  onClick={() => openFix(findings[0])}
+                  title="Issue 1: Absolute claim"
+                >
+                  1
+                </button>
+              )}
+
+              {!resolvedIds.includes(2) && (
+                <button
+                  ref={(el) => (markerRefs.current[2] = el)}
+                  type="button"
+                  className={`issue-marker marker-two ${selectedId === 2 ? "marker-active" : ""}`}
+                  onClick={() => openFix(findings[1])}
+                  title="Issue 2: Timeframe claim"
+                >
+                  2
+                </button>
+              )}
+
+              {!resolvedIds.includes(3) && (
+                <button
+                  ref={(el) => (markerRefs.current[3] = el)}
+                  type="button"
+                  className={`issue-marker marker-three ${selectedId === 3 ? "marker-active" : ""}`}
+                  onClick={() => openFix(findings[2])}
+                  title="Issue 3: Comparative claim"
+                >
+                  3
+                </button>
+              )}
+            </div>
+
+            <div className="preview-legend">
+              <span><i className="legend-high" /> High priority</span>
+              <span><i className="legend-medium" /> Medium priority</span>
+              <span><i className="legend-low" /> Low priority</span>
+            </div>
+          </div>
+
+          {selectedFinding && !resolvedIds.includes(selectedFinding.id) && (
+            <div className="magic-fix-panel" ref={panelRef}>
+              <div className="magic-fix-heading">
+                <Sparkles size={16} />
+                <span>MAGIC FIX · ISSUE #{selectedFinding.id}</span>
+              </div>
+
+              <p className="magic-fix-copy">{selectedFinding.explanation}</p>
+
+              <span className="magic-fix-label">PROPOSED REVISION</span>
+              <textarea
+                value={replacement}
+                onChange={(e) => setReplacement(e.target.value)}
+                rows={3}
+              />
+
+              <div className="magic-fix-actions">
+                <button
+                  type="button"
+                  className="magic-fix-apply"
+                  onClick={applyFix}
+                  disabled={!replacement.trim()}
+                >
+                  <Check size={16} />
+                  Apply Fix
+                  <ArrowRight size={15} />
+                </button>
+
+                <button
+                  type="button"
+                  className="magic-fix-cancel"
+                  onClick={() => setSelectedId(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {selectedFinding && (
+            <div className="selected-insight">
+              <Sparkles size={18} className="insight-icon" />
+              <div>
+                <strong>Issue #{selectedFinding.id}: {selectedFinding.title}</strong>
+                <p>{selectedFinding.explanation}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="approval-panel">
+            <div className="approval-icon">
+              <ShieldCheck size={24} />
+            </div>
+            <div className="approval-copy">
+              <h3>Human approval</h3>
+              <p className="muted">Approve this creative once all brand flags have been resolved.</p>
             </div>
             <button
+              type="button"
               className="primary-button"
-              onClick={() => setApproved(!approved)}
+              disabled={unresolvedCount > 0}
+              onClick={() => alert("Draft approved for release.")}
             >
-              {approved ? <Check size={16} /> : <ArrowRight size={16} />}
-              {approved ? "Marked" : "Request review"}
+              Approve creative <Check size={16} />
             </button>
-          </section>
-        </>
-      )}
+          </div>
+        </section>
+
+        <aside>
+          <div className="profile-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span className="eyebrow" style={{ margin: 0 }}>LIVE REVISED OUTPUT</span>
+              <span className="demo-badge">
+                {resolvedIds.length > 0 ? `${resolvedIds.length} FIXED` : "ORIGINAL"}
+              </span>
+            </div>
+
+            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14 }}>
+              <div style={{ marginBottom: 10 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: "var(--cyan)", letterSpacing: 1 }}>
+                  HEADLINE
+                </span>
+                <p style={{ margin: "4px 0 0", fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
+                  {fullHeadline}
+                </p>
+              </div>
+
+              <div>
+                <span style={{ fontSize: 10, fontWeight: 800, color: "var(--cyan)", letterSpacing: 1 }}>
+                  BODY COPY
+                </span>
+                <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.7, color: "var(--muted)" }}>
+                  {fullBody}
+                </p>
+              </div>
+            </div>
+
+            {resolvedIds.length > 0 && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--lime)", display: "flex", alignItems: "center", gap: 6 }}>
+                <Check size={14} /> Updated in real time as you apply fixes
+              </p>
+            )}
+          </div>
+
+          <div className="section-heading" style={{ marginTop: 24 }}>
+            <div>
+              <p className="eyebrow">AUDIT FINDINGS</p>
+              <h2>Flagged issues</h2>
+            </div>
+            <span className="finding-count">{unresolvedCount}</span>
+          </div>
+
+          <div className="issue-list">
+            {findings.map((finding) => (
+              <IssueCard
+                key={finding.id}
+                finding={finding}
+                selected={selectedId === finding.id}
+                onSelect={() => openFix(finding)}
+              />
+            ))}
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
