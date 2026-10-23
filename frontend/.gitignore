@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+backend/__pycache__/
+__pycache__/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python environment
+.venv/
+venv/
+
+# Editor and operating-system files
+.vscode/
+.DS_Store
+Thumbs.db
