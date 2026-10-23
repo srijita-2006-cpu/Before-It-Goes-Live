@@ -1,4 +1,3 @@
-
 import { useRef, useState } from "react";
 import {
   ArrowUpRight,
@@ -39,10 +38,10 @@ export default function Home({
     }
 
     if (
-    file.type.startsWith("text/") ||
-    /\.(txt|md|csv|json)$/i.test(file.name)
+      file.type.startsWith("text/") ||
+      /\.(txt|md|csv|json)$/i.test(file.name)
     ) {
-    return "Written content";
+      return "Written content";
     }
 
     return "Other";
@@ -61,7 +60,7 @@ export default function Home({
 
   function updateFileType(index: number, type: ContentType) {
     setFiles((current) =>
-      current.map((item, i) => (i === index ? { ...item, type } : item)),
+      current.map((item, i) => (i === index ? { ...item, type } : item))
     );
   }
 
