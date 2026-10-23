@@ -1,100 +1,160 @@
-
 .splash-screen {
-  min-height: 100vh;
-  min-height: 100dvh;
+  min-height: 100svh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   position: relative;
   overflow: hidden;
-  background: #03051b;
-  color: #f5fbff;
-  font-family: Arial, sans-serif;
-  padding: 24px;
-  box-sizing: border-box;
+  padding: 32px 24px;
+  background: #05071b;
+  color: #f5f7ff;
+  text-align: center;
+}
+
+.splash-glow {
+  position: absolute;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.splash-glow-one {
+  background: #12c4d4;
+  top: 5%;
+  left: -150px;
+}
+
+.splash-glow-two {
+  background: #c6f45b;
+  bottom: 0;
+  right: -180px;
 }
 
 .splash-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  animation: splash-appear 0.8s ease-out both;
+  position: relative;
+  z-index: 1;
+  animation: splash-enter 700ms ease both;
 }
 
 .splash-logo {
-  width: min(240px, 65vw);
-  height: auto;
+  width: 104px;
+  height: 104px;
   object-fit: contain;
-  border-radius: 20px;
+  border-radius: 26px;
+  margin-bottom: 34px;
+  animation: logo-float 3s ease-in-out infinite;
+}
+
+.eyebrow {
+  color: #12c4d4;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 3px;
 }
 
 .splash-content h1 {
-  font-size: clamp(25px, 5vw, 34px);
-  margin: 28px 0 8px;
-  letter-spacing: -0.8px;
+  font-size: clamp(44px, 8vw, 76px);
+  line-height: 1.03;
+  letter-spacing: -3px;
+  margin: 22px 0;
 }
 
-.splash-content p {
-  color: #9daec9;
-  font-size: 15px;
-  letter-spacing: 1px;
-  margin: 0;
+.splash-content h1 span {
+  color: #c6f45b;
+}
+
+.splash-description {
+  color: #a4abc4;
+  max-width: 330px;
+  line-height: 1.8;
+  margin: 0 auto;
+  font-size: 14px;
 }
 
 .splash-loader {
-  width: 100px;
+  width: 68px;
   height: 3px;
-  margin-top: 38px;
-  background: #18213c;
-  border-radius: 10px;
+  background: #252943;
+  margin: 34px auto 0;
   overflow: hidden;
+  border-radius: 10px;
 }
 
 .splash-loader span {
   display: block;
-  width: 40%;
   height: 100%;
+  width: 40%;
   background: #12c4d4;
-  border-radius: inherit;
-  animation: splash-loading 1.5s ease-in-out infinite;
+  animation: loader-slide 1.3s ease-in-out infinite;
 }
 
 .splash-continue {
   position: absolute;
-  bottom: max(36px, env(safe-area-inset-bottom));
-  padding: 14px 36px;
-  border: 0;
+  z-index: 1;
+  bottom: 75px;
+  width: min(310px, calc(100% - 48px));
+  padding: 16px;
+  border: none;
   border-radius: 14px;
   background: #c6f45b;
-  color: #08101d;
-  font-size: 16px;
-  font-weight: 700;
+  color: #10150a;
+  font-weight: 800;
   cursor: pointer;
-  transition: transform 0.2s ease;
+}
+
+.splash-continue span {
+  margin-left: 10px;
 }
 
 .splash-continue:hover {
   transform: translateY(-2px);
 }
 
-@keyframes splash-loading {
-  from {
-    transform: translateX(-110%);
-  }
-  to {
-    transform: translateX(260%);
-  }
+.splash-footer {
+  position: absolute;
+  bottom: 26px;
+  color: #646b88;
+  font-size: 9px;
+  letter-spacing: 2px;
 }
 
-@keyframes splash-appear {
+@keyframes splash-enter {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(16px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes logo-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes loader-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-content,
+  .splash-logo,
+  .splash-loader span {
+    animation: none;
   }
 }
