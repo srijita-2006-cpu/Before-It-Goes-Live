@@ -193,13 +193,44 @@ export default function Review({
                 </div>
               </div>
 
-              <div className="selected-insight">
-                <span className="insight-icon"><Sparkles size={17} /></span>
-                <div>
-                  <strong>{selected?.title ?? "Select a finding"}</strong>
-                  <p>{selected?.explanation ?? "Choose a marker to inspect a finding."}</p>
-                </div>
-              </div>
+              
+            <div className="selected-insight">
+            <span className="insight-icon">
+                <Sparkles size={17} />
+            </span>
+
+            <div>
+                <strong>{selected?.title ?? "Select a finding"}</strong>
+                <p>
+                {selected?.explanation ??
+                    "Choose a marker to inspect a finding."}
+                </p>
+
+                {selected && (
+                <>
+                    <p className="muted">
+                    <strong>Suggested fix:</strong> {selected.suggestion}
+                    </p>
+
+                    <button
+                    className="secondary-button"
+                    onClick={() => {
+                        setContent(
+                        content.trimEnd() +
+                            "\n\nSuggested revision: " +
+                            selected.suggestion
+                        );
+                        setApproved(false);
+                        setShowEditor(true);
+                    }}
+                    >
+                    Use suggestion <ArrowRight size={16} />
+                    </button>
+                </>
+                )}
+            </div>
+            </div>
+
             </section>
 
             <section className="findings-column">
