@@ -819,12 +819,16 @@ export default function GraphView({
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [aiSource, setAiSource] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiAsked, setAiAsked] = useState<string | null>(null);
+  const [aiNote, setAiNote] = useState<string | null>(null);
 
   function handleSelectNode(node: NodeData) {
     if (selectedNode?.id !== node.id) {
       setSelectedNode(node);
       setAiAnswer(null);
       setAiSource(null);
+      setAiAsked(null);
+      setAiNote(null);
       setAiQuestion("");
     }
   }
@@ -857,9 +861,12 @@ export default function GraphView({
   }
 
   async function handleAskAI(customQ?: string) {
-    if (!selectedNode) return;
+    if (!selectedNode || aiLoading) return;
     const q = customQ || aiQuestion;
     if (!q || !q.trim()) return;
+    setAiAsked(q.trim());
+    setAiQuestion("");
+    setAiNote(null);
     setAiLoading(true);
     setAiAnswer(null);
     try {
@@ -869,12 +876,12 @@ export default function GraphView({
         node_type: selectedNode.technicalType,
       });
       setAiAnswer(res.answer);
-      setAiSource(res.source || "Google Gemini 1.5 Flash");
+      setAiSource(res.source || "AI Copilot");
+      const extra = res as { live?: boolean; reason?: string }; // extra fields from the backend
+      if (extra.live === false) setAiNote(extra.reason || "live Gemini is not connected");
     } catch {
-      setAiAnswer(
-        `Under FTC Section 5 and Brand Guidelines, "${selectedNode.title}" requires certified empirical validation. In our blast radius scan, modifying this claim directly impacts related campaign packaging and social ad collateral.`
-      );
-      setAiSource("Pre-Flight Policy Engine");
+      setAiAnswer("Could not reach the AI server. Make sure the Python backend is running, then ask again.");
+      setAiSource("Connection error");
     } finally {
       setAiLoading(false);
     }
@@ -1383,16 +1390,28 @@ export default function GraphView({
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                       <span style={{ fontSize: 9, fontWeight: 800, color: "var(--cyan)", letterSpacing: 0.5 }}>
-                        ✨ {aiSource || "GOOGLE GEMINI 1.5 FLASH"}
+                        ✨ {aiSource || "AI COPILOT"}
                       </span>
                     </div>
+                    {aiAsked && (
+                      <p style={{ margin: "0 0 8px", fontSize: 10, color: "var(--muted)", fontStyle: "italic" }}>
+                        You asked: {aiAsked}
+                      </p>
+                    )}
                     <p style={{ margin: 0 }}>{aiAnswer}</p>
+                    {aiNote && (
+                      <p style={{ margin: "8px 0 0", fontSize: 9.5, color: "#f5ce75" }}>
+                        ⚠ Preset answer, live Gemini is offline: {aiNote}
+                      </p>
+                    )}
                   </div>
                   <button
                     type="button"
                     className="secondary-button"
                     onClick={() => {
                       setAiAnswer(null);
+                      setAiAsked(null);
+                      setAiNote(null);
                       setAiQuestion("");
                     }}
                     style={{ fontSize: 10, padding: "6px 10px", alignSelf: "flex-start", gap: 4 }}
@@ -1450,7 +1469,7 @@ export default function GraphView({
                 placeholder="Ask Gemini anything about this node..."
                 value={aiQuestion}
                 onChange={(e) => setAiQuestion(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleAskAI()}
+                onKeyDown={(e) => e.key === "Enter" && !aiLoading && handleAskAI()}
                 style={{
                   flex: 1,
                   background: "var(--bg)",

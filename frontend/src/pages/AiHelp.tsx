@@ -13,7 +13,7 @@ export default function AiHelp() {
     {
       sender: "ai",
       text: "👋 Welcome to the Brand & Compliance AI Help Center. You can ask me any questions about approved claims, regulatory policies (FDA, FTC, EU Cosmetics), or ask me to draft compliant copy before you submit it.",
-      source: "Gemini 1.5 Flash",
+      source: "Brand Compliance Copilot",
       timestamp: "Just now",
     },
   ]);
@@ -44,7 +44,7 @@ export default function AiHelp() {
       const aiMsg: ChatMessage = {
         sender: "ai",
         text: res.answer,
-        source: res.source,
+        source: (res as { live?: boolean }).live === false ? `${res.source} (offline: ${(res as { reason?: string }).reason ?? "no live model"})` : res.source,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, aiMsg]);
@@ -79,7 +79,7 @@ export default function AiHelp() {
             Brand & Regulatory AI Help Center
           </h1>
           <span style={{ fontSize: "11px", background: "#6366f120", color: "#a5b4fc", border: "1px solid #6366f150", padding: "3px 10px", borderRadius: "12px", fontWeight: 600 }}>
-            Gemini 1.5 Flash Connected
+            Gemini AI Copilot
           </span>
         </div>
         <p style={{ margin: 0, color: "#94a3b8", fontSize: "14px" }}>
