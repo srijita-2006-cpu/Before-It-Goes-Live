@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, ShieldCheck, Check, ArrowRight } from "lucide-react";
 import IssueCard, { type Finding } from "../components/IssueCard";
+import { applyFixToBackend } from "../api.ts";
 
 type Props = {
   content?: string;
@@ -104,17 +105,22 @@ export default function Review({ setContent: setPropContent }: Props = {}) {
   function applyFix() {
     if (!selectedFinding || resolvedIds.includes(selectedFinding.id)) return;
 
-    if (selectedFinding.id === 1) {
+    const findingId = selectedFinding.id;
+
+    if (findingId === 1) {
       setHeadlineFix(replacement);
-    } else if (selectedFinding.id === 2) {
+    } else if (findingId === 2) {
       setBodyPart2Fix(replacement);
-    } else if (selectedFinding.id === 3) {
+    } else if (findingId === 3) {
       setBodyPart3Fix(replacement);
     }
 
-    setResolvedIds((prev) => [...prev, selectedFinding.id]);
+    setResolvedIds((prev) => [...prev, findingId]);
     setSelectedId(null);
     setPropContent?.(fullBody);
+
+    // Sync to Python backend through clean api.ts
+    applyFixToBackend(1, findingId, replacement).catch(() => {});
   }
 
   const unresolvedCount = findings.length - resolvedIds.length;

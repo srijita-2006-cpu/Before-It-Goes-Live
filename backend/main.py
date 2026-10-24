@@ -139,6 +139,44 @@ def guideline_health():
 def log_precedent(payload: dict):
     record_user_decision(payload.get("rule_id", 1), payload.get("decision", "Accepted"), payload.get("rationale", ""))
     return {"status": "recorded"}
+# 8. Activity / Audit History Endpoint
+@app.get("/api/activity")
+def get_activity():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT 
+        d.id,
+        d.filename,
+        d.file_type,
+        d.raw_text,
+        d.created_at,
+        COUNT(f.id) as total_findings,
+        SUM(CASE WHEN f.status = 'Resolved' THEN 1 ELSE 0 END) as resolved_findings
+    FROM documents d
+    LEFT JOIN findings f ON d.id = f.document_id
+    GROUP BY d.id
+    ORDER BY d.created_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    activity_list = []
+    for r in rows:
+        total = r["total_findings"]
+        resolved = r["resolved_findings"] or 0
+        status = "Approved" if total > 0 and total == resolved else ("In Review" if total > 0 else "Clean")
+        activity_list.append({
+            "id": r["id"],
+            "filename": r["filename"],
+            "file_type": r["file_type"],
+            "created_at": r["created_at"],
+            "total_findings": total,
+            "resolved_findings": resolved,
+            "status": status,
+            "preview": (r["raw_text"][:110] + "...") if r["raw_text"] and len(r["raw_text"]) > 110 else r["raw_text"]
+        })
+    return {"activity": activity_list}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
