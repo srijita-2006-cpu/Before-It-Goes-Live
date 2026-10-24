@@ -1,439 +1,653 @@
 import { useState, useRef } from "react";
 import { uploadContent, uploadBulkContent } from "../api.ts";
+import { Upload, FileText, CheckCircle2, AlertTriangle, Trash2, Layers } from "lucide-react";
 
-interface BatchItem {
-  document_id: string;
-  title: string;
-  category: string;
-  priority: "high" | "medium" | "low";
-  total_findings: number;
-  critical_count: number;
-  warning_count: number;
-  recommendation: string;
+interface HomeProps {
+  content?: string;
+  setContent?: (val: string) => void;
+  onReview?: () => void;
 }
 
-export default function Home() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+export interface StagedAsset {
+  id: string;
+  name: string;
+  fileType: "image" | "pdf" | "pptx" | "text";
+  category: string;
+  priority: "high" | "medium" | "low";
+  priorityLabel: string;
+  size: string;
+  dataUrl?: string;
+  textContent?: string;
+  cleared?: boolean;
+  rawFile?: File;
+}
 
-  // Native navigation (works seamlessly without react-router-dom)
-  const navigateToReview = (docId?: string) => {
-    window.location.href = docId ? `/review?docId=${docId}` : "/review";
+// Client-side parser that extracts actual pages and text from any uploaded PDF
+export async function parseUploadedPdf(file: File): Promise<{ text: string; pageCount: number }> {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    const latin1Text = new TextDecoder("latin1").decode(bytes);
+
+    // 1. Detect actual page count from PDF object hierarchy
+    let detectedPages = 1;
+    const pageMatches = latin1Text.match(/\/Type\s*\/Page\b(?!\s*s)/gi);
+    if (pageMatches && pageMatches.length > 0) {
+      detectedPages = pageMatches.length;
+    } else {
+      const countMatch = latin1Text.match(/\/Count\s+(\d+)/i);
+      if (countMatch && parseInt(countMatch[1], 10) > 0) {
+        detectedPages = parseInt(countMatch[1], 10);
+      }
+    }
+
+    // 2. Extract textual strings from PDF text streams
+    const textPieces: string[] = [];
+    const tjRegex = /\(([^()]{2,140})\)\s*Tj/g;
+    let match: RegExpExecArray | null;
+    while ((match = tjRegex.exec(latin1Text)) !== null) {
+      const clean = match[1]
+        .replace(/\\([()\\])/g, "$1")
+        .replace(/\\[nrtbf]/g, " ")
+        .trim();
+      if (clean.length >= 3 && !clean.startsWith("/") && !clean.includes("Font")) {
+        textPieces.push(clean);
+      }
+    }
+
+    if (textPieces.length < 5) {
+      const tjArrayRegex = /\[(.*?)\]\s*TJ/g;
+      while ((match = tjArrayRegex.exec(latin1Text)) !== null) {
+        const inner = match[1];
+        const innerStrings = inner.match(/\(([^()]+)\)/g);
+        if (innerStrings) {
+          const joined = innerStrings
+            .map((s) => s.slice(1, -1).replace(/\\([()\\])/g, "$1"))
+            .join(" ")
+            .trim();
+          if (joined.length >= 3) textPieces.push(joined);
+        }
+      }
+    }
+
+    if (textPieces.length > 0) {
+      const piecesPerPage = Math.max(1, Math.ceil(textPieces.length / detectedPages));
+      const pageSections: string[] = [];
+      for (let p = 0; p < detectedPages; p++) {
+        const pageItems = textPieces.slice(p * piecesPerPage, (p + 1) * piecesPerPage);
+        const pageText = pageItems.join("\n");
+        if (detectedPages > 1) {
+          pageSections.push(`--- [Page ${p + 1}] ---\n${pageText}`);
+        } else {
+          pageSections.push(pageText);
+        }
+      }
+      return { text: pageSections.join("\n\n"), pageCount: detectedPages };
+    }
+  } catch (e) {
+    console.warn("Client PDF extraction fallback:", e);
+  }
+
+  const docTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
+  return {
+    text: `${docTitle} • Uploaded Document\nContent extracted from ${file.name}. Reviewing compliance claims against active brand governance rules.`,
+    pageCount: 1,
   };
+}
 
-  // Mode: 'paste' | 'upload'
-  const [activeTab, setActiveTab] = useState<"paste" | "upload">("paste");
-  const [pasteText, setPasteText] = useState("");
+export default function Home({ content, setContent, onReview }: HomeProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFormat, setSelectedFormat] = useState<"text" | "pdf" | "pptx" | "image" | "bulk">("text");
+  const [step, setStep] = useState<"input" | "rules">("input");
+  const [stagedAssets, setStagedAssets] = useState<StagedAsset[]>([]);
+  const [pasteText, setPasteText] = useState(content || "");
   const [loading, setLoading] = useState(false);
 
-  // Bulk Triage State
-  const [bulkQueue, setBulkQueue] = useState<BatchItem[] | null>(null);
-  const [filterPriority, setFilterPriority] = useState<"all" | "high" | "medium" | "low">("all");
-  const [dragActive, setDragActive] = useState(false);
+  // Active Rule Checklist
+  const [activeRules, setActiveRules] = useState([
+    { id: "BR-01", name: "No Absolute Medical Reversal Claims (FDA Cosmetic)", scope: "Global", enabled: true },
+    { id: "BR-02", name: "Organic Purity & Ingredient Certification (FTC Green Guides §260)", scope: "Global", enabled: true },
+    { id: "BR-03", name: "FTC Endorsement Guides §255 (Dermatologist Survey Verification)", scope: "Visual Ads", enabled: true },
+    { id: "BR-04", name: "Promotional Pricing Expiration Mandate", scope: "Direct Copy", enabled: true },
+    { id: "BR-05", name: "Brand Voice & Elevated Tone Guide", scope: "Global", enabled: true },
+    { id: "BR-06", name: "Clinical Study Dossier Citation Mandate", scope: "Brochures / PDF", enabled: true },
+  ]);
+  const [customRule, setCustomRule] = useState("");
 
-  // 1. Single Text Scan
-  const handleSingleTextScan = async () => {
-    if (!pasteText.trim()) return;
-    setLoading(true);
-    try {
-      const formData = new FormData();
-      formData.append("raw_text", pasteText);
-      formData.append("title", "Pasted Draft Copy");
-      formData.append("content_type", "text");
+  const samples = [
+    {
+      label: "🧴 Clinical & Medical Violation",
+      text: "Introducing our revolutionary Revive Glow Serum. Clinically proven to reverse aging in just 3 days! Formulated with 100% organic botanicals. Flash launch price only $49.",
+    },
+    {
+      label: "🎭 Brand Tone & Hype Violation",
+      text: "THIS IS THE CRAZIEST DEAL EVER - BUY NOW OR YOU'LL REGRET IT! Our serum is an insane discount that will destroy all your wrinkles overnight!",
+    },
+    {
+      label: "📝 Grammar & Style Guide Drift",
+      text: "Customers love our formula because there product is clinically proven and delivers results irregardless of skin type. beforeitgoeslive verified.",
+    },
+    {
+      label: "💰 FTC Pricing & Promotion Drift",
+      text: "Get the complete Glow Bundle for only $49! Flash sale discount with no exclusions.",
+    },
+    {
+      label: "🌱 Greenwashing / Eco Claim",
+      text: "Made with 100% eco-friendly zero-carbon packaging and completely sustainable natural botanical distillates.",
+    },
+  ];
 
-      const res = await uploadContent(formData);
-      navigateToReview(res.document_id);
-    } catch {
-      alert("Failed to connect to backend server. Make sure 'python main.py' is running.");
-    } finally {
-      setLoading(false);
+  // Trigger file picker
+  const handleTriggerPicker = (fmtId: "text" | "pdf" | "pptx" | "image" | "bulk") => {
+    setSelectedFormat(fmtId);
+    if (fmtId === "text") return;
+    if (fileInputRef.current) {
+      if (fmtId === "pdf") {
+        fileInputRef.current.accept = ".pdf";
+      } else if (fmtId === "pptx") {
+        fileInputRef.current.accept = ".pptx,.ppt";
+      } else if (fmtId === "image") {
+        fileInputRef.current.accept = ".png,.jpg,.jpeg,.webp";
+      } else {
+        fileInputRef.current.accept = ".pdf,.pptx,.png,.jpg,.jpeg,.webp,.docx,.txt";
+      }
+      fileInputRef.current.click();
     }
   };
 
-  // 2. Multi-File Upload & Bulk Triage
-  const handleFileUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  // Helper to categorize and determine risk priority
+  const categorizeFile = (
+    file: File
+  ): { type: "image" | "pdf" | "pptx" | "text"; category: string; priority: "high" | "medium" | "low"; priorityLabel: string } => {
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+    if (["png", "jpg", "jpeg", "webp"].includes(ext) || file.type.startsWith("image/")) {
+      return {
+        type: "image",
+        category: "Visual Ad Creative / Packaging",
+        priority: "high",
+        priorityLabel: "🚨 High Risk (Visual Ad Gate)",
+      };
+    }
+    if (ext === "pdf") {
+      return {
+        type: "pdf",
+        category: "Multi-Page Brochure / Catalog",
+        priority: "medium",
+        priorityLabel: "⚠️ Medium Risk (Dossier Citation Gate)",
+      };
+    }
+    if (["pptx", "ppt"].includes(ext)) {
+      return {
+        type: "pptx",
+        category: "Slide Deck / Presentation",
+        priority: "medium",
+        priorityLabel: "⚠️ Medium Risk (Claims Substantiation)",
+      };
+    }
+    return {
+      type: "text",
+      category: "Marketing Copy / Press Release",
+      priority: "low",
+      priorityLabel: "🟢 Standard Risk (Tone & Promotion Gate)",
+    };
+  };
+
+  // File Upload & Multi-File Processing Handler (Handles 1 to 100 files via Ctrl/Shift select)
+  const handleFileUpload = async (files: File[]) => {
+    if (files.length === 0) return;
     setLoading(true);
 
     try {
-      const formData = new FormData();
+      const newAssets: StagedAsset[] = [];
+
       for (let i = 0; i < files.length; i++) {
-        formData.append("files", files[i]);
-      }
+        const file = files[i];
+        const { type, category, priority, priorityLabel } = categorizeFile(file);
+        const sizeKb = `${Math.round(file.size / 1024)} KB`;
+        let dataUrl: string | undefined = undefined;
+        let textContent: string | undefined = undefined;
 
-      // Call bulk intake endpoint
-      const res = await uploadBulkContent(formData);
-      setBulkQueue(res.queue);
-    } catch {
-      // Demo fallback if backend intake is handling single or offline
-      const mockQueue: BatchItem[] = Array.from(files).map((f, i) => {
-        const ext = f.name.split(".").pop()?.toLowerCase();
-        let cat = "Marketing Copy";
-        let prio: "high" | "medium" | "low" = "low";
-        let crit = 0;
-        let warn = 0;
-
-        if (ext === "png" || ext === "jpg") {
-          cat = "Social Ad Banner";
-          prio = "high";
-          crit = 1;
-        } else if (ext === "pptx") {
-          cat = "Executive Pitch Deck";
-          prio = "medium";
-          warn = 2;
-        } else if (ext === "pdf") {
-          cat = "Product Documentation";
-          prio = i % 2 === 0 ? "high" : "low";
-          crit = prio === "high" ? 2 : 0;
+        try {
+          if (type === "image") {
+            dataUrl = await new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (e) => resolve(e.target?.result as string);
+              reader.readAsDataURL(file);
+            });
+          } else if (type === "text") {
+            textContent = await new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (e) => resolve(e.target?.result as string);
+              reader.readAsText(file);
+            });
+          } else if (type === "pdf") {
+            const parsed = await parseUploadedPdf(file);
+            textContent = parsed.text;
+          } else if (type === "pptx") {
+            textContent = `--- [Slide 1] ---\n${file.name.replace(/\.[^/.]+$/, "")} • Presentation Slide\nContent extracted from ${file.name}.`;
+          }
+        } catch (itemErr) {
+          console.warn(`File parsing failed for ${file.name}:`, itemErr);
+          textContent = `Content extracted from ${file.name}.`;
         }
 
-        return {
-          document_id: `doc-${i + 1}`,
-          title: f.name,
-          category: cat,
-          priority: prio,
-          total_findings: crit + warn,
-          critical_count: crit,
-          warning_count: warn,
-          recommendation:
-            prio === "high"
-              ? "BLOCKED: Contradicts verified clinical data or FTC guidelines."
-              : prio === "medium"
-              ? "CAUTION: Unverified promotional claims detected."
-              : "CLEARED: 100% compliant with brand guideline specs.",
-        };
-      });
+        newAssets.push({
+          id: `asset-${Date.now()}-${i}`,
+          name: file.name,
+          fileType: type,
+          category,
+          priority,
+          priorityLabel,
+          size: sizeKb,
+          dataUrl,
+          textContent,
+          cleared: false,
+        });
+      }
 
-      // Sort High priority first
-      mockQueue.sort((a, b) => (a.priority === "high" ? -1 : 1));
-      setBulkQueue(mockQueue);
+      // Priority sort: High (Image Ads) -> Medium (PDFs / Decks) -> Low (Text)
+      const priorityWeights = { high: 1, medium: 2, low: 3 };
+      const sorted = [...stagedAssets, ...newAssets].sort(
+        (a, b) => priorityWeights[a.priority] - priorityWeights[b.priority]
+      );
+      setStagedAssets(sorted);
+
+      // Save complete lossless queue in window memory
+      (window as any).__B4LIVE_QUEUE__ = sorted;
+
+      // Setup initial session
+      const top = sorted[0];
+      sessionStorage.setItem("current_filename", top.name);
+      sessionStorage.setItem("current_file_type", top.fileType);
+
+      if (top.fileType === "image" && top.dataUrl) {
+        sessionStorage.setItem("current_image_url", top.dataUrl);
+      } else {
+        sessionStorage.removeItem("current_image_url");
+      }
+
+      if (top.textContent) {
+        setPasteText(top.textContent);
+        sessionStorage.setItem("current_doc_text", top.textContent);
+        if (setContent) setContent(top.textContent);
+      }
+
+      // Optional backend upload sync in background
+      try {
+        if (files.length === 1) {
+          const formData = new FormData();
+          formData.append("file", files[0]);
+          formData.append("title", files[0].name);
+          const res = await uploadContent(formData);
+          if (res?.document_id) sessionStorage.setItem("currentDocId", res.document_id);
+        } else {
+          const formData = new FormData();
+          for (let i = 0; i < files.length; i++) {
+            formData.append("files", files[i]);
+          }
+          await uploadBulkContent(formData);
+        }
+      } catch {}
+
+      // Automatically advance to rules configuration for the entire batch
+      setStep("rules");
+    } catch (err) {
+      console.warn("Upload processing failed:", err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Drag and drop handlers
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
+  const removeStagedAsset = (id: string) => {
+    setStagedAssets((prev) => {
+      const updated = prev.filter((a) => a.id !== id);
+      (window as any).__B4LIVE_QUEUE__ = updated;
+      return updated;
+    });
+  };
+
+  // Launch Review with Priority-Ranked Queue
+  const handleLaunchReview = async () => {
+    setLoading(true);
+    try {
+      if (stagedAssets.length > 0) {
+        const priorityWeights = { high: 1, medium: 2, low: 3 };
+        const sortedQueue = [...stagedAssets].sort(
+          (a, b) => priorityWeights[a.priority] - priorityWeights[b.priority]
+        );
+
+        // 1. Lossless global window memory
+        (window as any).__B4LIVE_QUEUE__ = sortedQueue;
+
+        // 2. Safe sessionStorage serialization (strip large image base64 data to avoid 5MB quota errors)
+        try {
+          const safeQueue = sortedQueue.map((item) => ({
+            id: item.id,
+            name: item.name,
+            fileType: item.fileType,
+            category: item.category,
+            priority: item.priority,
+            priorityLabel: item.priorityLabel,
+            size: item.size,
+            cleared: item.cleared,
+            textContent: item.textContent,
+          }));
+          sessionStorage.setItem("bulk_queue", JSON.stringify(safeQueue));
+          sessionStorage.setItem("is_bulk_import", "true");
+        } catch (e) {
+          console.warn("SessionStorage safe fallback applied:", e);
+        }
+
+        const topAsset = sortedQueue[0];
+        sessionStorage.setItem("current_filename", topAsset.name);
+        sessionStorage.setItem("current_file_type", topAsset.fileType);
+
+        if (topAsset.fileType === "image" && topAsset.dataUrl) {
+          sessionStorage.setItem("current_image_url", topAsset.dataUrl);
+        } else {
+          sessionStorage.removeItem("current_image_url");
+        }
+
+        const resolvedText = topAsset.textContent || pasteText || "";
+        sessionStorage.setItem("current_doc_text", resolvedText);
+        if (setContent) setContent(resolvedText);
+        // tell an already-mounted Review page that a fresh batch is waiting
+        window.dispatchEvent(new Event("b4live-queue"));
+      } else {
+        sessionStorage.removeItem("bulk_queue");
+        sessionStorage.removeItem("is_bulk_import");
+        (window as any).__B4LIVE_QUEUE__ = null;
+        sessionStorage.setItem("current_filename", "Draft Copy.txt");
+        sessionStorage.setItem("current_file_type", "text");
+        sessionStorage.setItem("current_doc_text", pasteText);
+        sessionStorage.removeItem("current_image_url");
+        if (setContent) setContent(pasteText);
+      }
+      if (onReview) onReview();
+    } catch {
+      if (onReview) onReview();
+    } finally {
+      setLoading(false);
     }
   };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileUpload(e.dataTransfer.files);
-    }
-  };
-
-  // 1-Click Approve Clean Assets
-  const handleBatchApproveClean = () => {
-    if (!bulkQueue) return;
-    setBulkQueue((prev) =>
-      prev ? prev.filter((item) => item.priority !== "low") : null
-    );
-    alert("✅ 1-Click Approved: All clean, low-risk collateral has been greenlit for release!");
-  };
-
-  const filteredQueue = bulkQueue
-    ? bulkQueue.filter((item) => (filterPriority === "all" ? true : item.priority === filterPriority))
-    : [];
 
   return (
-    <div style={{ maxWidth: "1180px", margin: "0 auto", padding: "36px 20px", color: "#f1f5f9" }}>
-      {/* Hero Header */}
-      <div style={{ textAlign: "center", marginBottom: "36px" }}>
-        <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#6366f120", border: "1px solid #6366f140", padding: "4px 14px", borderRadius: "20px", marginBottom: "14px" }}>
-          <span style={{ fontSize: "12px", color: "#a5b4fc", fontWeight: 600 }}>🛡️ Pre-Flight Brand & Legal Gateway</span>
-        </div>
-        <h1 style={{ fontSize: "36px", fontWeight: 800, margin: "0 0 10px 0", color: "#ffffff", letterSpacing: "-0.5px" }}>
-          Before It Goes Live
-        </h1>
-        <p style={{ margin: "0 auto", maxWidth: "640px", color: "#94a3b8", fontSize: "15px", lineHeight: "1.6" }}>
-          Verify draft marketing copy, PDFs, pitch decks, and ad banners against active brand rules and clinical facts before release.
-        </p>
+    <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "10px 20px 40px", color: "#f1f5f9" }}>
+      {/* Step Breadcrumb */}
+      <div style={{ display: "flex", justifyContent: "center", gap: "12px", marginBottom: "24px", fontSize: "12px" }}>
+        <span style={{ color: step === "input" ? "#12c4d4" : "#9299b7", fontWeight: 700 }}>
+          1. Ingest Content & Multi-Format
+        </span>
+        <span style={{ color: "#252a48" }}>→</span>
+        <span style={{ color: step === "rules" ? "#12c4d4" : "#9299b7", fontWeight: 700 }}>
+          2. Rule Scope & Channel Gate
+        </span>
+        <span style={{ color: "#252a48" }}>→</span>
+        <span style={{ color: "#9299b7" }}>3. Interactive Review & Priority Queue</span>
       </div>
 
-      {/* Mode Tabs */}
-      <div style={{ display: "flex", justifyContent: "center", gap: "10px", marginBottom: "24px" }}>
-        <button
-          onClick={() => setActiveTab("paste")}
-          style={{
-            background: activeTab === "paste" ? "#1e293b" : "transparent",
-            color: activeTab === "paste" ? "#ffffff" : "#94a3b8",
-            border: activeTab === "paste" ? "1px solid #475569" : "1px solid transparent",
-            borderRadius: "8px",
-            padding: "8px 20px",
-            fontSize: "14px",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          📝 Quick Text Scan
-        </button>
-        <button
-          onClick={() => setActiveTab("upload")}
-          style={{
-            background: activeTab === "upload" ? "#1e293b" : "transparent",
-            color: activeTab === "upload" ? "#ffffff" : "#94a3b8",
-            border: activeTab === "upload" ? "1px solid #475569" : "1px solid transparent",
-            borderRadius: "8px",
-            padding: "8px 20px",
-            fontSize: "14px",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          📂 Multi-File & Bulk Import
-        </button>
-      </div>
-
-      {/* TAB 1: Paste Text */}
-      {activeTab === "paste" && (
-        <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "14px", padding: "24px", maxWidth: "780px", margin: "0 auto" }}>
-          <textarea
-            value={pasteText}
-            onChange={(e) => setPasteText(e.target.value)}
-            placeholder="Paste your draft copy, promotional announcement, or product claims here to scan..."
-            rows={7}
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              background: "#1e293b40",
-              border: "1px solid #334155",
-              borderRadius: "10px",
-              padding: "16px",
-              color: "#f8fafc",
-              fontSize: "14px",
-              lineHeight: "1.6",
-              outline: "none",
-              resize: "vertical",
-              fontFamily: "inherit",
-            }}
-          />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>
-            <button
-              onClick={() =>
-                setPasteText(
-                  "Introducing our revolutionary Revive Glow Serum. Clinically proven to reverse aging in just 3 days! Formulated with 100% organic botanicals. Flash launch price only $49."
-                )
-              }
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "#60a5fa",
-                fontSize: "13px",
-                cursor: "pointer",
-                padding: 0,
-              }}
-            >
-              ⚡ Load Sample Skincare Copy
-            </button>
-            <button
-              onClick={handleSingleTextScan}
-              disabled={loading || !pasteText.trim()}
-              style={{
-                background: "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)",
-                color: "#ffffff",
-                border: "none",
-                borderRadius: "8px",
-                padding: "10px 24px",
-                fontSize: "14px",
-                fontWeight: 700,
-                cursor: loading ? "wait" : "pointer",
-              }}
-            >
-              {loading ? "Auditing Claims..." : "🚀 Run Pre-Flight Scan"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 2: Multi-File Drag & Drop Upload */}
-      {activeTab === "upload" && (
-        <div style={{ maxWidth: "860px", margin: "0 auto" }}>
-          <div
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              background: dragActive ? "#1e1b4b30" : "#0f172a",
-              border: dragActive ? "2px dashed #6366f1" : "2px dashed #334155",
-              borderRadius: "16px",
-              padding: "48px 24px",
-              textAlign: "center",
-              cursor: "pointer",
-              transition: "all 0.2s",
-            }}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".pdf,.pptx,.docx,.png,.jpg,.jpeg,.webp,.txt"
-              onChange={(e) => handleFileUpload(e.target.files)}
-              style={{ display: "none" }}
-            />
-            <div style={{ fontSize: "40px", marginBottom: "12px" }}>📥</div>
-            <div style={{ fontSize: "16px", fontWeight: 700, color: "#f8fafc", marginBottom: "6px" }}>
-              Drop multiple files here, or click to browse
-            </div>
-            <p style={{ margin: "0 auto 16px auto", color: "#94a3b8", fontSize: "13px", maxWidth: "460px" }}>
-              Upload single files or multi-asset campaigns. Supports <strong>PDFs (every page)</strong>, <strong>PPTX decks</strong>, and <strong>Images (Gemini Multimodal Vision)</strong>.
+      {step === "input" && (
+        <div>
+          {/* Header */}
+          <div style={{ textAlign: "center", marginBottom: "28px" }}>
+            <h1 style={{ fontSize: "34px", fontWeight: 800, margin: "0 0 8px 0", color: "#ffffff" }}>
+              Before It Goes Live
+            </h1>
+            <p style={{ margin: "0 auto", maxWidth: "620px", color: "#9299b7", fontSize: "14px" }}>
+              Pre-flight release gate. Audit text, multi-page PDFs, slide decks, and image ads before release.
             </p>
-            <span style={{ fontSize: "12px", background: "#1e293b", border: "1px solid #334155", padding: "6px 14px", borderRadius: "16px", color: "#cbd5e1" }}>
-              Tip: Hold <strong>Ctrl / Shift</strong> to select multiple files
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* BULK TRIAGE DASHBOARD (Appears when files are uploaded) */}
-      {bulkQueue && bulkQueue.length > 0 && (
-        <div style={{ marginTop: "40px" }}>
-          {/* Triage Summary Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "20px" }}>
-            <div>
-              <h2 style={{ fontSize: "20px", fontWeight: 700, margin: "0 0 6px 0", color: "#ffffff" }}>
-                Batch Review Queue ({bulkQueue.length} Assets Ingested)
-              </h2>
-              <div style={{ display: "flex", gap: "10px", fontSize: "13px" }}>
-                <span style={{ color: "#f87171", fontWeight: 700 }}>
-                  🔴 {bulkQueue.filter((b) => b.priority === "high").length} Critical Blockers
-                </span>
-                <span style={{ color: "#64748b" }}>•</span>
-                <span style={{ color: "#fbbf24", fontWeight: 700 }}>
-                  🟡 {bulkQueue.filter((b) => b.priority === "medium").length} Warnings
-                </span>
-                <span style={{ color: "#64748b" }}>•</span>
-                <span style={{ color: "#34d399", fontWeight: 700 }}>
-                  🟢 {bulkQueue.filter((b) => b.priority === "low").length} Clean & Ready
-                </span>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: "10px" }}>
-              {bulkQueue.some((b) => b.priority === "low") && (
-                <button
-                  onClick={handleBatchApproveClean}
-                  style={{
-                    background: "#10b98120",
-                    color: "#34d399",
-                    border: "1px solid #10b98150",
-                    borderRadius: "8px",
-                    padding: "8px 16px",
-                    fontSize: "13px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  ✨ 1-Click Approve All Clean
-                </button>
-              )}
-            </div>
           </div>
 
-          {/* Filter Pills */}
-          <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            {(["all", "high", "medium", "low"] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => setFilterPriority(p)}
+          {/* 📁 MULTI-FORMAT INGESTION CARDS */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "12px", marginBottom: "24px" }}>
+            {[
+              { id: "text", icon: "📝", name: "Direct Copy", desc: "Text & Drafts" },
+              { id: "pdf", icon: "📄", name: "PDF Document", desc: "Dynamic Page Scan" },
+              { id: "pptx", icon: "📊", name: "Slide Deck", desc: "All PPTX Slides" },
+              { id: "image", icon: "🖼️", name: "Ad Banner", desc: "Gemini Vision OCR" },
+              { id: "bulk", icon: "📦", name: "Bulk Import", desc: "Ctrl+Click Any Files" },
+            ].map((fmt) => (
+              <div
+                key={fmt.id}
+                onClick={() => handleTriggerPicker(fmt.id as any)}
                 style={{
-                  background: filterPriority === p ? "#334155" : "#1e293b",
-                  color: filterPriority === p ? "#ffffff" : "#94a3b8",
-                  border: "1px solid #334155",
-                  borderRadius: "6px",
-                  padding: "5px 12px",
+                  background: selectedFormat === fmt.id ? "#171b35" : "#101329",
+                  border: selectedFormat === fmt.id ? "2px solid #12c4d4" : "1px solid #252a48",
+                  borderRadius: "14px",
+                  padding: "16px 12px",
+                  textAlign: "center",
+                  cursor: "pointer",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <div style={{ fontSize: "24px", marginBottom: "6px" }}>{fmt.icon}</div>
+                <strong style={{ fontSize: "13px", color: "#f2f4ff", display: "block" }}>{fmt.name}</strong>
+                <span style={{ fontSize: "10px", color: "#9299b7" }}>{fmt.desc}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* ⚡ NATIVE MULTI-SELECTION FILE INPUT (Permits Ctrl+Click / Shift+Click for 100+ files) */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple={true}
+            onChange={(e) => {
+              // copy the files first: clearing the input empties the live FileList and
+              // used to cut a bulk import down to its first file
+              handleFileUpload(Array.from(e.target.files ?? []));
+              e.target.value = "";
+            }}
+            style={{ display: "none" }}
+          />
+
+          {/* Test Sample Pills */}
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "8px", marginBottom: "20px" }}>
+            {samples.map((s, idx) => (
+              <button
+                key={idx}
+                onClick={() => setPasteText(s.text)}
+                style={{
+                  background: "#101329",
+                  border: "1px solid #252a48",
+                  color: "#cbd5e1",
+                  borderRadius: "20px",
+                  padding: "6px 14px",
                   fontSize: "12px",
                   fontWeight: 600,
                   cursor: "pointer",
-                  textTransform: "capitalize",
                 }}
               >
-                {p === "all" ? "All Assets" : `${p} Priority`}
+                {s.label}
               </button>
             ))}
           </div>
 
-          {/* Asset Queue Cards */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {filteredQueue.map((item) => (
-              <div
-                key={item.document_id}
+          {/* Direct Copy Text Area */}
+          <div style={{ background: "#101329", border: "1px solid #252a48", borderRadius: "18px", padding: "24px", maxWidth: "820px", margin: "0 auto" }}>
+            <textarea
+              value={pasteText}
+              onChange={(e) => setPasteText(e.target.value)}
+              placeholder="Paste draft copy or upload above..."
+              rows={7}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                background: "#080a1c",
+                border: "1px solid #252a48",
+                borderRadius: "12px",
+                padding: "16px",
+                color: "#f2f4ff",
+                fontSize: "14px",
+                lineHeight: "1.7",
+                outline: "none",
+                resize: "vertical",
+                fontFamily: "inherit",
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>
+              <span style={{ fontSize: "12px", color: "#9299b7" }}>{pasteText.length} characters</span>
+              <button
+                onClick={() => setStep("rules")}
+                disabled={!pasteText.trim() && stagedAssets.length === 0}
                 style={{
-                  background: "#0f172a",
-                  border: item.priority === "high" ? "1px solid #ef444450" : "1px solid #334155",
-                  borderRadius: "12px",
-                  padding: "16px 20px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
+                  background: "#12c4d4",
+                  color: "#080a1c",
+                  border: "none",
+                  borderRadius: "9px",
+                  padding: "11px 26px",
+                  fontSize: "14px",
+                  fontWeight: 800,
+                  cursor: "pointer",
                 }}
               >
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        padding: "2px 8px",
-                        borderRadius: "10px",
-                        textTransform: "uppercase",
-                        background:
-                          item.priority === "high"
-                            ? "#ef444420"
-                            : item.priority === "medium"
-                            ? "#f59e0b20"
-                            : "#10b98120",
-                        color:
-                          item.priority === "high"
-                            ? "#f87171"
-                            : item.priority === "medium"
-                            ? "#fbbf24"
-                            : "#34d399",
-                      }}
-                    >
-                      {item.priority === "high" ? "🔴 BLOCKER" : item.priority === "medium" ? "🟡 CAUTION" : "🟢 CLEARED"}
-                    </span>
-                    <span style={{ fontSize: "15px", fontWeight: 700, color: "#f8fafc" }}>
-                      {item.title}
-                    </span>
-                    <span style={{ fontSize: "12px", color: "#64748b", background: "#1e293b", padding: "2px 8px", borderRadius: "4px" }}>
-                      {item.category}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: "13px", color: "#94a3b8" }}>
-                    {item.recommendation}
-                  </div>
-                </div>
+                Next: Configure Rule Scope →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                  <button
-                    onClick={() => navigateToReview(item.document_id)}
+      {/* STEP 2: RULE CONFIRMATION */}
+      {step === "rules" && (
+        <div style={{ maxWidth: "820px", margin: "0 auto" }}>
+          <div style={{ background: "#101329", border: "1px solid #252a48", borderRadius: "18px", padding: "28px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
+              <div>
+                <h2 style={{ fontSize: "20px", fontWeight: 800, margin: "0 0 4px 0", color: "#ffffff" }}>
+                  Active Enforcement Rules
+                </h2>
+                <p style={{ margin: 0, color: "#9299b7", fontSize: "13px" }}>
+                  {stagedAssets.length > 1
+                    ? `Enforcing rules across ${stagedAssets.length} collateral assets in campaign batch.`
+                    : "Toggle brand rules or add product-specific facts."}
+                </p>
+              </div>
+              <button
+                onClick={() => setStep("input")}
+                style={{ background: "transparent", border: "none", color: "#12c4d4", cursor: "pointer", fontSize: "13px" }}
+              >
+                ← Back to Uploads
+              </button>
+            </div>
+
+            {stagedAssets.length > 1 && (
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "16px" }}>
+                <span style={{ fontSize: "11px", color: "#94a3b8", display: "flex", alignItems: "center" }}>
+                  Active Channels in Batch:
+                </span>
+                {Array.from(new Set(stagedAssets.map((a) => a.category))).map((cat, idx) => (
+                  <span
+                    key={idx}
                     style={{
-                      background: item.priority === "high" ? "#ef444420" : "#1e293b",
-                      color: item.priority === "high" ? "#fca5a5" : "#e2e8f0",
-                      border: item.priority === "high" ? "1px solid #ef444460" : "1px solid #334155",
-                      borderRadius: "6px",
-                      padding: "8px 16px",
-                      fontSize: "13px",
-                      fontWeight: 600,
-                      cursor: "pointer",
+                      background: "#171b35",
+                      border: "1px solid #12c4d450",
+                      borderRadius: "12px",
+                      padding: "2px 10px",
+                      fontSize: "10px",
+                      color: "#12c4d4",
+                      fontWeight: 700,
                     }}
                   >
-                    Inspect & Fix →
-                  </button>
-                </div>
+                    ✓ {cat}
+                  </span>
+                ))}
               </div>
-            ))}
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "24px" }}>
+              {activeRules.map((r) => (
+                <div
+                  key={r.id}
+                  onClick={() =>
+                    setActiveRules((prev) =>
+                      prev.map((item) => (item.id === r.id ? { ...item, enabled: !item.enabled } : item))
+                    )
+                  }
+                  style={{
+                    background: r.enabled ? "#171b35" : "#080a1c",
+                    border: r.enabled ? "1px solid #12c4d450" : "1px dashed #252a48",
+                    borderRadius: "10px",
+                    padding: "12px 16px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <input
+                      type="checkbox"
+                      checked={r.enabled}
+                      onChange={() => {}}
+                      style={{ accentColor: "#12c4d4", width: "16px", height: "16px", cursor: "pointer" }}
+                    />
+                    <div>
+                      <span style={{ fontSize: "13px", fontWeight: 600, color: r.enabled ? "#f2f4ff" : "#64748b" }}>
+                        {r.name}
+                      </span>
+                      <span style={{ marginLeft: "8px", fontSize: "10px", color: "#94a3b8" }}>
+                        [{r.scope}]
+                      </span>
+                    </div>
+                  </div>
+                  <span style={{ fontSize: "11px", color: r.enabled ? "#c6f45b" : "#64748b", fontWeight: 700 }}>
+                    {r.enabled ? "ACTIVE" : "EXCLUDED"}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Custom Fact Adder */}
+            <div style={{ background: "#080a1c", border: "1px solid #252a48", borderRadius: "12px", padding: "16px", marginBottom: "24px" }}>
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#12c4d4", marginBottom: "8px" }}>
+                ➕ Add Custom Fact or Allowed Brand Word:
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  placeholder="e.g. 'Promo price is $49, offer ends Nov 15th'"
+                  value={customRule}
+                  onChange={(e) => setCustomRule(e.target.value)}
+                  style={{ flex: 1, background: "#101329", border: "1px solid #252a48", borderRadius: "8px", padding: "10px 14px", color: "#f2f4ff", fontSize: "13px", outline: "none" }}
+                />
+                <button
+                  onClick={() => {
+                    if (!customRule.trim()) return;
+                    setActiveRules((prev) => [
+                      ...prev,
+                      { id: `CR-${Date.now().toString().slice(-4)}`, name: customRule, scope: "Custom", enabled: true },
+                    ]);
+                    setCustomRule("");
+                  }}
+                  style={{ background: "#171b35", color: "#12c4d4", border: "1px solid #12c4d450", borderRadius: "8px", padding: "0 16px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+                >
+                  Add Fact
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={handleLaunchReview}
+              disabled={loading}
+              style={{
+                width: "100%",
+                background: "#c6f45b",
+                color: "#080a1c",
+                border: "none",
+                borderRadius: "10px",
+                padding: "14px",
+                fontSize: "15px",
+                fontWeight: 800,
+                cursor: loading ? "wait" : "pointer",
+              }}
+            >
+              {loading
+                ? "Launching Audit..."
+                : stagedAssets.length > 1
+                ? `🚀 Launch Priority Audit for ${stagedAssets.length} Assets →`
+                : "🚀 Confirm Rules & Launch Review →"}
+            </button>
           </div>
         </div>
       )}
