@@ -8,9 +8,6 @@ import {
   Clock,
   Sparkles,
   Search,
-  Filter,
-  CheckCircle2,
-  FileCheck,
   X,
   Trash2,
 } from "lucide-react";
@@ -37,7 +34,8 @@ const fallbackHistory: ActivityItem[] = [
     total_findings: 3,
     resolved_findings: 3,
     status: "Approved",
-    preview: "Radiance redefined: organic botanical blend with pure skin vitality. Formulated without parabens or synthetics...",
+    preview:
+      "Radiance redefined: organic botanical blend with pure skin vitality. Formulated without parabens or synthetics...",
   },
   {
     id: "doc-102",
@@ -47,7 +45,8 @@ const fallbackHistory: ActivityItem[] = [
     total_findings: 3,
     resolved_findings: 2,
     status: "In Review",
-    preview: "Multi-page product specifications. Clinically proven to support natural skin renewal over continuous use...",
+    preview:
+      "Multi-page product specifications. Clinically proven to support natural skin renewal over continuous use...",
   },
   {
     id: "doc-103",
@@ -57,7 +56,8 @@ const fallbackHistory: ActivityItem[] = [
     total_findings: 2,
     resolved_findings: 2,
     status: "Approved",
-    preview: "[Slide 1] Project AuraGlo Reveal [Slide 2] Clinical dossier #2024-B confirms improvement at 28 days...",
+    preview:
+      "[Slide 1] Project AuraGlo Reveal [Slide 2] Clinical dossier #2024-B confirms improvement at 28 days...",
   },
 ];
 
@@ -89,10 +89,7 @@ export default function Activity() {
     async function loadActivity() {
       setLoading(true);
 
-      // 1. Load existing persistent items from localStorage
       const savedLedger = getStoredLedger();
-
-      // 2. Automatically ingest current session upload (e.g. PureGlow image / brochure)
       const currentFilename = sessionStorage.getItem("current_filename");
       let sessionItem: ActivityItem | null = null;
 
@@ -107,6 +104,7 @@ export default function Activity() {
 
         let totalFindings = 3;
         let resolvedFindings = 0;
+
         const rawFindings = sessionStorage.getItem("current_findings");
         if (rawFindings) {
           try {
@@ -125,21 +123,28 @@ export default function Activity() {
         const preview =
           fileType === "image"
             ? "Visual ad creative scanned. Claims audited against FTC Green Guides §260, Endorsement §255, and FDA cosmetic rules."
-            : docText.slice(0, 160).replace(/[\r\n]+/g, " ") + (docText.length > 160 ? "..." : "");
+            : docText.slice(0, 160).replace(/[\r\n]+/g, " ") +
+              (docText.length > 160 ? "..." : "");
 
         sessionItem = {
           id: `audit-${currentFilename.replace(/[^a-zA-Z0-9]/g, "_")}`,
           filename: currentFilename,
           file_type: fileType,
-          created_at: `Today at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+          created_at: `Today at ${new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}`,
           total_findings: totalFindings,
           resolved_findings: resolvedFindings,
-          status: isAllResolved ? "Approved" : resolvedFindings > 0 ? "In Review" : "In Review",
+          status: isAllResolved
+            ? "Approved"
+            : resolvedFindings > 0
+            ? "In Review"
+            : "In Review",
           preview: preview || "Audited marketing collateral copy.",
         };
       }
 
-      // 3. Fetch from backend if available
       let backendItems: ActivityItem[] = [];
       try {
         const res = await fetch("http://127.0.0.1:8000/api/activity");
@@ -153,25 +158,10 @@ export default function Activity() {
         console.warn("Backend loading error, merging local audit history:", err);
       }
 
-      // 4. Merge all sources without duplicating
       const map = new Map<string, ActivityItem>();
-
-      // Baseline sample items
-      fallbackHistory.forEach((item) => {
-        map.set(item.filename, item);
-      });
-
-      // Backend items
-      backendItems.forEach((item) => {
-        map.set(item.filename, item);
-      });
-
-      // LocalStorage persistent items
-      savedLedger.forEach((item) => {
-        map.set(item.filename, item);
-      });
-
-      // Active session item (promoted to top)
+      fallbackHistory.forEach((item) => map.set(item.filename, item));
+      backendItems.forEach((item) => map.set(item.filename, item));
+      savedLedger.forEach((item) => map.set(item.filename, item));
       if (sessionItem) {
         map.set(sessionItem.filename, sessionItem);
       }
@@ -181,12 +171,15 @@ export default function Activity() {
       saveStoredLedger(merged);
       setLoading(false);
     }
-
     loadActivity();
   }, []);
 
   const handleClearHistory = () => {
-    if (window.confirm("Clear saved local audit history? Baseline records will remain.")) {
+    if (
+      window.confirm(
+        "Clear saved local audit history? Baseline records will remain."
+      )
+    ) {
       localStorage.removeItem(STORAGE_KEY);
       setItems(fallbackHistory);
     }
@@ -207,9 +200,11 @@ export default function Activity() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">AUDIT LEDGER & COMPLIANCE TRAIL</p>
-          <h1>Review <span>activity.</span></h1>
+          <h1>
+            Review <span>activity.</span>
+          </h1>
           <p className="muted">
-            Track past pre-flight audits, applied surgical fixes, and approved collateral.
+            Track past pre-flight audits, applied fixes, and approved collateral.
           </p>
         </div>
         <span className="workspace-icon">
@@ -217,8 +212,10 @@ export default function Activity() {
         </span>
       </div>
 
-      {/* METRICS SUMMARY */}
-      <div className="review-summary" style={{ marginBottom: 25, flexWrap: "wrap", gap: 14 }}>
+      <div
+        className="review-summary"
+        style={{ marginBottom: 25, flexWrap: "wrap", gap: 14 }}
+      >
         <div style={{ display: "flex", gap: 30 }}>
           <div>
             <span className="summary-number">{items.length}</span>
@@ -228,7 +225,9 @@ export default function Activity() {
             </div>
           </div>
           <div>
-            <span className="summary-number" style={{ color: "var(--lime)" }}>{approvedCount}</span>
+            <span className="summary-number" style={{ color: "var(--lime)" }}>
+              {approvedCount}
+            </span>
             <div>
               <strong>Cleared Assets</strong>
               <p className="muted">100% Brand Compliant</p>
@@ -236,7 +235,9 @@ export default function Activity() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="demo-badge">LIVE AUDIT HISTORY ({items.length} TOTAL)</span>
+          <span className="demo-badge">
+            LIVE AUDIT HISTORY ({items.length} TOTAL)
+          </span>
           {items.length > 3 && (
             <button
               onClick={handleClearHistory}
@@ -260,19 +261,44 @@ export default function Activity() {
         </div>
       </div>
 
-      {/* SEARCH & FILTER BAR */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--surface)", border: "1px solid var(--border)", padding: "6px 12px", borderRadius: 10, minWidth: 260 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20,
+          flexWrap: "wrap",
+          gap: 12,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            padding: "6px 12px",
+            borderRadius: 10,
+            minWidth: 260,
+          }}
+        >
           <Search size={15} color="var(--muted)" />
           <input
             type="text"
             placeholder="Search all audited documents..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            style={{ background: "transparent", border: 0, color: "var(--text)", outline: "none", fontSize: 13, width: "100%" }}
+            style={{
+              background: "transparent",
+              border: 0,
+              color: "var(--text)",
+              outline: "none",
+              fontSize: 13,
+              width: "100%",
+            }}
           />
         </div>
-
         <div style={{ display: "flex", gap: 6 }}>
           {(["All", "Approved", "In Review"] as const).map((tab) => (
             <button
@@ -292,7 +318,9 @@ export default function Activity() {
         <p className="muted">Loading audit records...</p>
       ) : filteredItems.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon"><Clock size={28} /></div>
+          <div className="empty-icon">
+            <Clock size={28} />
+          </div>
           <h2>No matching audits found</h2>
           <p>No audit logs match your search filter.</p>
         </div>
@@ -301,7 +329,6 @@ export default function Activity() {
           {filteredItems.map((item) => {
             const isApproved = item.status === "Approved";
             const isInReview = item.status === "In Review";
-
             return (
               <article
                 key={item.id}
@@ -309,7 +336,14 @@ export default function Activity() {
                 style={{ padding: 20, cursor: "pointer" }}
                 onClick={() => setInspectItem(item)}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    marginBottom: 12,
+                  }}
+                >
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div
                       className="type-icon"
@@ -322,23 +356,33 @@ export default function Activity() {
                     </div>
                     <div>
                       <strong style={{ fontSize: 14 }}>{item.filename}</strong>
-                      <p className="muted" style={{ margin: "2px 0 0", fontSize: 11 }}>
-                        Audited {item.created_at} · Format: {item.file_type.toUpperCase()}
+                      <p
+                        className="muted"
+                        style={{ margin: "2px 0 0", fontSize: 11 }}
+                      >
+                        Audited {item.created_at} · Format:{" "}
+                        {item.file_type.toUpperCase()}
                       </p>
                     </div>
                   </div>
-
                   <span
                     className="demo-badge"
                     style={{
-                      color: isApproved ? "var(--lime)" : isInReview ? "#f5ce75" : "var(--cyan)",
-                      borderColor: isApproved ? "#c6f45b50" : isInReview ? "#f5ce7550" : "var(--border)",
+                      color: isApproved
+                        ? "var(--lime)"
+                        : isInReview
+                        ? "#f5ce75"
+                        : "var(--cyan)",
+                      borderColor: isApproved
+                        ? "#c6f45b50"
+                        : isInReview
+                        ? "#f5ce7550"
+                        : "var(--border)",
                     }}
                   >
                     {item.status.toUpperCase()}
                   </span>
                 </div>
-
                 <div
                   style={{
                     background: "var(--bg)",
@@ -348,26 +392,51 @@ export default function Activity() {
                     margin: "12px 0",
                   }}
                 >
-                  <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: "var(--muted)" }}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      color: "var(--muted)",
+                    }}
+                  >
                     "{item.preview}"
                   </p>
                 </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: isApproved ? "var(--lime)" : "var(--muted)" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginTop: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 11,
+                      color: isApproved ? "var(--lime)" : "var(--muted)",
+                    }}
+                  >
                     {isApproved ? (
                       <>
                         <ShieldCheck size={15} />
-                        <span>All {item.total_findings} brand & legal checks cleared</span>
+                        <span>
+                          All {item.total_findings} brand & legal checks cleared
+                        </span>
                       </>
                     ) : (
                       <>
                         <AlertTriangle size={15} color="#f5ce75" />
-                        <span>{item.resolved_findings} of {item.total_findings} issues resolved</span>
+                        <span>
+                          {item.resolved_findings} of {item.total_findings} issues
+                          resolved
+                        </span>
                       </>
                     )}
                   </div>
-
                   <span
                     style={{
                       fontSize: 11,
@@ -387,7 +456,6 @@ export default function Activity() {
         </div>
       )}
 
-      {/* INSPECT AUDIT CERTIFICATE MODAL */}
       {inspectItem && (
         <div
           style={{
@@ -417,40 +485,97 @@ export default function Activity() {
           >
             <button
               type="button"
-              style={{ position: "absolute", top: 18, right: 18, background: "transparent", border: 0, color: "var(--muted)", cursor: "pointer" }}
+              style={{
+                position: "absolute",
+                top: 18,
+                right: 18,
+                background: "transparent",
+                border: 0,
+                color: "var(--muted)",
+                cursor: "pointer",
+              }}
               onClick={() => setInspectItem(null)}
             >
               <X size={18} />
             </button>
-
             <span className="eyebrow">AUDIT CERTIFICATE DETAILS</span>
-            <h2 style={{ margin: "10px 0 4px", fontSize: 20 }}>{inspectItem.filename}</h2>
+            <h2 style={{ margin: "10px 0 4px", fontSize: 20 }}>
+              {inspectItem.filename}
+            </h2>
             <p className="muted" style={{ fontSize: 12, marginBottom: 20 }}>
-              Logged on {inspectItem.created_at} • Format: {inspectItem.file_type.toUpperCase()}
+              Logged on {inspectItem.created_at} • Format:{" "}
+              {inspectItem.file_type.toUpperCase()}
             </p>
-
-            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 16, marginBottom: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
+            <div
+              style={{
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                padding: 16,
+                marginBottom: 20,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                  fontSize: 12,
+                }}
+              >
                 <span className="muted">Pre-Flight Status:</span>
-                <strong style={{ color: inspectItem.status === "Approved" ? "var(--lime)" : "#f5ce75" }}>
+                <strong
+                  style={{
+                    color:
+                      inspectItem.status === "Approved"
+                        ? "var(--lime)"
+                        : "#f5ce75",
+                  }}
+                >
                   {inspectItem.status.toUpperCase()}
                 </strong>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                  fontSize: 12,
+                }}
+              >
                 <span className="muted">Total Flags Detected:</span>
                 <strong>{inspectItem.total_findings}</strong>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
-                <span className="muted">Surgically Resolved:</span>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                  fontSize: 12,
+                }}
+              >
+                <span className="muted">Resolved:</span>
                 <strong>{inspectItem.resolved_findings}</strong>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 12,
+                }}
+              >
                 <span className="muted">Digital Audit Hash:</span>
-                <code style={{ color: "var(--cyan)", fontSize: 11 }}>b4live_{String(inspectItem.id).replace("-", "")}_verified</code>
+                <code style={{ color: "var(--cyan)", fontSize: 11 }}>
+                  b4live_{String(inspectItem.id).replace("-", "")}_verified
+                </code>
               </div>
             </div>
-
-            <button type="button" className="primary-button" style={{ width: "100%" }} onClick={() => setInspectItem(null)}>
+            <button
+              type="button"
+              className="primary-button"
+              style={{ width: "100%" }}
+              onClick={() => setInspectItem(null)}
+            >
               Close Certificate
             </button>
           </div>
@@ -458,7 +583,7 @@ export default function Activity() {
       )}
 
       <p className="prototype-note" style={{ marginTop: 28 }}>
-        <Sparkles size={16} /> Every review decision, surgical replacement, and user ignore action is permanently logged to your audit ledger.
+        <Sparkles size={16} /> Every review decision and approved collateral item is permanently logged to your audit ledger.
       </p>
     </div>
   );

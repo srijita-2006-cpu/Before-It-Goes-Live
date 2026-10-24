@@ -15,7 +15,6 @@ import {
   RefreshCw,
   ArrowUpRight,
   Layers,
-  FileText,
 } from "lucide-react";
 import { askAI } from "../api.ts";
 
@@ -586,13 +585,16 @@ const PAGE_SPECIFIC_PROFILES: {
 
 export default function GraphView({
   findings: propsFindings,
-  documentText: propsDocText,
-  docTitle: propsDocTitle,
+  documentText: _propsDocText,
+  docTitle: _propsDocTitle,
   pages: propsPages,
   totalPages: propsTotalPages,
   currentPage: propsCurrentPage = 1,
   onNavigateToPage,
 }: GraphViewProps = {}) {
+  void _propsDocText;
+  void _propsDocTitle;
+
   const totalPagesCount = propsTotalPages || (propsPages ? propsPages.length : 10);
   const [selectedPage, setSelectedPage] = useState<number | "all">(propsCurrentPage);
 
