@@ -23,7 +23,7 @@ from engine import (
 
 app = FastAPI(title="Before It Goes Live API", version="2.0.0")
 
-# Enable CORS for local Vite frontend
+# Enable CORS for frontend requests (local and deployed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -542,7 +542,7 @@ def ask_ai(payload: AIAskRequest):
     if not collateral_list:
         collateral_list = ["Q3_Collateral_Compliance.pdf", "Social_Ad_Copy_v2.txt", "Summer_Promo_Deck.pptx", "Retail_Packaging_v1.docx"]
 
-    gemini_key = os.getenv("GEMINI_API_KEY", "key").strip()
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     system_prompt = (
         "You are the 'Before It Goes Live' Pre-Flight AI Brand Governance & Compliance Copilot. "
         "Your task is to analyze advertising copy, regulatory guidelines (FTC §5 substantiation, FDA 21 CFR cosmetic rules), "
@@ -558,7 +558,7 @@ def ask_ai(payload: AIAskRequest):
         "- Keep the answer concise (3-4 sentences), highly professional, authoritative, and direct."
     )
 
-    if gemini_key:
+    if gemini_key and gemini_key != "key":
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
             body = {
@@ -629,4 +629,5 @@ def export_copy(payload: ExportRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main.py", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main.py", host="0.0.0.0", port=port, reload=True)
