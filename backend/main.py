@@ -542,7 +542,7 @@ def ask_ai(payload: AIAskRequest):
     if not collateral_list:
         collateral_list = ["Q3_Collateral_Compliance.pdf", "Social_Ad_Copy_v2.txt", "Summer_Promo_Deck.pptx", "Retail_Packaging_v1.docx"]
 
-    gemini_key = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6JUO4Pd16fk1Tza8WO-G2Q9L4NEGHSke99NciEflH67hQ").strip()
+    gemini_key = os.getenv("GEMINI_API_KEY", "key").strip()
     system_prompt = (
         "You are the 'Before It Goes Live' Pre-Flight AI Brand Governance & Compliance Copilot. "
         "Your task is to analyze advertising copy, regulatory guidelines (FTC §5 substantiation, FDA 21 CFR cosmetic rules), "
