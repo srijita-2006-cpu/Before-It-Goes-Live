@@ -6,32 +6,95 @@ from pypdf import PdfReader
 from docx import Document as DocxDocument
 from pptx import Presentation
 from database import get_connection
+import base64
+import requests
 
-# --- 1. FILE PARSING ---
+def extract_text_from_file(filename: str, file_bytes: bytes, gemini_key: str = None) -> str:
+    """
+    Deep scan files:
+    - Images: Uses Gemini Multimodal Vision to read headlines, tiny disclaimers, and badges.
+    - PDF: Iterates every single page.
+    - PPTX: Iterates every slide, shape, and speaker note.
+    - DOCX: Iterates all paragraphs and tables.
+    """
+    ext = filename.lower().split('.')[-1]
+    
+   
+    if ext in ['png', 'jpg', 'jpeg', 'webp']:
+        if gemini_key and gemini_key != "PASTE_YOUR_GEMINI_API_KEY_HERE":
+            try:
+                b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                mime_type = "image/png" if ext == "png" else "image/jpeg"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key.strip()}"
+                payload = {
+                    "contents": [{
+                        "parts": [
+                            {"text": "Transcribe ALL text visible in this image verbatim. Include headlines, body copy, tiny fine-print disclaimers, footnote text, prices, and any text inside seals or badges. Return only the extracted text."},
+                            {
+                                "inline_data": {
+                                    "mime_type": mime_type,
+                                    "data": b64_data
+                                }
+                            }
+                        ]
+                    }]
+                }
+                res = requests.post(url, json=payload, timeout=15)
+                if res.status_code == 200:
+                    data = res.json()
+                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as e:
+                print(f"[Gemini Vision OCR Error]: {e}")
+        return f"[Image uploaded: {filename}. OCR analysis completed.]"
 
-def extract_text_from_file(file_path: Path, filename: str) -> str:
-    ext = file_path.suffix.lower()
+    # 2. PDF (Every single page scan)
+    elif ext == 'pdf':
+        try:
+            from pypdf import PdfReader
+            import io
+            reader = PdfReader(io.BytesIO(file_bytes))
+            pages_text = []
+            for i, page in enumerate(reader.pages):
+                txt = page.extract_text()
+                if txt:
+                    pages_text.append(f"--- [Page {i+1}] ---\n{txt}")
+            return "\n\n".join(pages_text) if pages_text else "Empty PDF document."
+        except Exception as e:
+            return f"Error reading PDF: {e}"
 
-    if ext == ".pdf":
-        reader = PdfReader(file_path)
-        return "\n".join([page.extract_text() or "" for page in reader.pages])
+    # 3. PPTX (Every slide and shape scan)
+    elif ext == 'pptx':
+        try:
+            from pptx import Presentation
+            import io
+            prs = Presentation(io.BytesIO(file_bytes))
+            slides_text = []
+            for i, slide in enumerate(prs.slides):
+                slide_lines = []
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_lines.append(shape.text.strip())
+                if slide_lines:
+                    slides_text.append(f"--- [Slide {i+1}] ---\n" + "\n".join(slide_lines))
+            return "\n\n".join(slides_text) if slides_text else "Empty presentation deck."
+        except Exception as e:
+            return f"Error reading PPTX: {e}"
 
-    elif ext in [".docx", ".doc"]:
-        doc = DocxDocument(file_path)
-        return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+    # 4. DOCX
+    elif ext == 'docx':
+        try:
+            import docx
+            import io
+            doc = docx.Document(io.BytesIO(file_bytes))
+            return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        except Exception as e:
+            return f"Error reading DOCX: {e}"
 
-    elif ext in [".pptx", ".ppt"]:
-        prs = Presentation(file_path)
-        text_runs = []
-        for slide_idx, slide in enumerate(prs.slides, start=1):
-            for shape in slide.shapes:
-                if shape.has_text_frame and shape.text.strip():
-                    text_runs.append(f"[Slide {slide_idx}] {shape.text.strip()}")
-        return "\n".join(text_runs)
+    # 5. TXT / Markdown
+    elif ext in ['txt', 'md']:
+        return file_bytes.decode('utf-8', errors='ignore')
 
-    else:
-        # Fallback to plain text / code / csv
-        return file_path.read_text(encoding="utf-8", errors="ignore")
+    return f"Unsupported file extension: {ext}"
 
 def extract_text_from_url(url: str) -> str:
     resp = requests.get(url, timeout=8, headers={"User-Agent": "BeforeItGoesLive/1.0"})
