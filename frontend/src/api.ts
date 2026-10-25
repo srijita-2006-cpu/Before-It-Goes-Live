@@ -5,7 +5,21 @@
 const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // --- Types ---
+// one turn of a conversation, sent back so the copilot remembers what was said
+export interface ChatTurn {
+  role: "user" | "ai";
+  text: string;
+}
+
+export interface AskAIResult {
+  answer: string;
+  source: string;
+  live?: boolean; // false = the backend could not reach Gemini and used an offline preset
+  reason?: string;
+}
+
 export interface AskAIParams {
+  history?: ChatTurn[];
   document_id?: string;
   node_id?: string;
   node_text?: string;
@@ -65,21 +79,21 @@ export const applyFix = applyFixToBackend;
 // --------------------------------------------------
 // 2. askAI (Overloaded: accepts Object, 2, 3, or 4 Arguments)
 // --------------------------------------------------
-export function askAI(params: AskAIParams): Promise<{ answer: string; source: string }>;
-export function askAI(nodeOrContext: string, question: string): Promise<{ answer: string; source: string }>;
+export function askAI(params: AskAIParams): Promise<AskAIResult>;
+export function askAI(nodeOrContext: string, question: string): Promise<AskAIResult>;
 export function askAI(
   question: string,
   nodeOrContext?: string,
   nodeType?: string,
   documentId?: string
-): Promise<{ answer: string; source: string }>;
+): Promise<AskAIResult>;
 
 export async function askAI(
   first: AskAIParams | string,
   second?: string,
   third?: string,
   fourth?: string
-): Promise<{ answer: string; source: string }> {
+): Promise<AskAIResult> {
   let payload: AskAIParams;
 
   if (typeof first === "object" && first !== null) {
@@ -115,10 +129,12 @@ export async function askAI(
     return await response.json();
   } catch (err) {
     console.warn("AI Copilot fallback active:", err);
+    // say so honestly: a canned answer here made every question look like it got the same reply
     return {
-      answer:
-        "PRE-FLIGHT COMPLIANCE EVALUATION: All claims must strictly adhere to FTC §5 substantiation protocols and active brand book guidelines before public distribution.",
-      source: "Brand Governance Copilot",
+      answer: "I can't reach the AI server right now. Make sure the Python backend is running, then ask again.",
+      source: "Connection error",
+      live: false,
+      reason: "backend not reachable",
     };
   }
 }

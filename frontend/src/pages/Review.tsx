@@ -19,7 +19,7 @@ import {
   Layers,
   CheckCircle2,
 } from "lucide-react";
-import { applyFixToBackend, askAI } from "../api.ts";
+import { applyFixToBackend, askAI, type ChatTurn } from "../api.ts";
 import GraphView from "../components/GraphView.tsx";
 
 interface Finding {
@@ -449,7 +449,8 @@ export default function Review({ content, setContent }: ReviewProps) {
 
   const [isEditingManually, setIsEditingManually] = useState(false);
   const [manualText, setManualText] = useState("");
-  const [aiAnswers, setAiAnswers] = useState<{ [id: string]: string }>({});
+  const [aiChats, setAiChats] = useState<{ [id: string]: ChatTurn[] }>({}); // conversation per finding
+  const [aiInputs, setAiInputs] = useState<{ [id: string]: string }>({});
   const [aiLoading, setAiLoading] = useState<{ [id: string]: boolean }>({});
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -674,24 +675,29 @@ export default function Review({ content, setContent }: ReviewProps) {
     advanceToNextOpen(finding.id, updatedList);
   };
 
-  const handleAskAi = async (finding: Finding) => {
+  const handleAskAi = async (finding: Finding, customQ?: string) => {
+    const q = (
+      customQ ?? `Why is "${finding.flagged_text}" flagged under ${finding.evidence} and what is the exact legal/brand reasoning?`
+    ).trim();
+    if (!q || aiLoading[finding.id]) return;
+    const history = aiChats[finding.id] ?? [];
+    setAiInputs((prev) => ({ ...prev, [finding.id]: "" }));
     setAiLoading((prev) => ({ ...prev, [finding.id]: true }));
+    let answer: string;
     try {
       const res = await askAI({
-        question: `Why is "${finding.flagged_text}" flagged under ${finding.evidence} and what is the exact legal/brand reasoning?`,
+        question: q,
         node_text: finding.flagged_text,
         node_type: "Uploaded Content Finding",
         edge_verdict: finding.severity,
+        history,
       });
-      setAiAnswers((prev) => ({ ...prev, [finding.id]: res.answer }));
+      answer = res.live === false ? `${res.answer}\n\n⚠ Offline preset answer: ${res.reason ?? "live Gemini not connected"}` : res.answer;
     } catch {
-      setAiAnswers((prev) => ({
-        ...prev,
-        [finding.id]: "Unable to reach Gemini reasoning backend.",
-      }));
-    } finally {
-      setAiLoading((prev) => ({ ...prev, [finding.id]: false }));
+      answer = "Unable to reach Gemini reasoning backend.";
     }
+    setAiChats((prev) => ({ ...prev, [finding.id]: [...history, { role: "user", text: q }, { role: "ai", text: answer }] }));
+    setAiLoading((prev) => ({ ...prev, [finding.id]: false }));
   };
 
   const handleDownload = () => {
@@ -1583,25 +1589,68 @@ export default function Review({ content, setContent }: ReviewProps) {
                     </button>
                   </div>
 
-                  {aiAnswers[activeFinding.id] && (
-                    <div
-                      style={{
-                        marginTop: "12px",
-                        background: "rgba(18, 196, 212, 0.08)",
-                        border: "1px solid var(--cyan)",
-                        borderRadius: "8px",
-                        padding: "10px 14px",
-                        fontSize: "12px",
-                        color: "#e2e8f0",
-                        lineHeight: "1.6",
-                      }}
-                    >
-                      <strong style={{ color: "var(--cyan)", display: "block", marginBottom: "4px" }}>
-                        Gemini Regulatory Reasoning:
-                      </strong>
-                      {aiAnswers[activeFinding.id]}
+                  {(aiChats[activeFinding.id] ?? []).map((turn, i) =>
+                    turn.role === "user" ? (
+                      <p key={i} style={{ margin: "10px 0 0", fontSize: "11px", color: "var(--muted)", fontStyle: "italic" }}>
+                        You asked: {turn.text}
+                      </p>
+                    ) : (
+                      <div
+                        key={i}
+                        style={{
+                          marginTop: "6px",
+                          background: "rgba(18, 196, 212, 0.08)",
+                          border: "1px solid var(--cyan)",
+                          borderRadius: "8px",
+                          padding: "10px 14px",
+                          fontSize: "12px",
+                          color: "#e2e8f0",
+                          lineHeight: "1.6",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        <strong style={{ color: "var(--cyan)", display: "block", marginBottom: "4px" }}>
+                          Gemini Regulatory Reasoning:
+                        </strong>
+                        {turn.text}
+                      </div>
+                    )
+                  )}
+
+                  {(aiChats[activeFinding.id] ?? []).length > 0 && (
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
+                      {["Explain that more simply", "Give a concrete example", "Make it shorter"].map((p) => (
+                        <button
+                          key={p}
+                          className="secondary-button"
+                          disabled={aiLoading[activeFinding.id]}
+                          onClick={() => handleAskAi(activeFinding, p)}
+                          style={{ minHeight: "28px", fontSize: "11px" }}
+                        >
+                          {p}
+                        </button>
+                      ))}
                     </div>
                   )}
+
+                  <div style={{ display: "flex", gap: "6px", marginTop: "10px" }}>
+                    <input
+                      type="text"
+                      value={aiInputs[activeFinding.id] ?? ""}
+                      onChange={(e) => setAiInputs((prev) => ({ ...prev, [activeFinding.id]: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && handleAskAi(activeFinding, aiInputs[activeFinding.id] ?? "")}
+                      placeholder={(aiChats[activeFinding.id] ?? []).length ? "Ask a follow-up, e.g. explain it more simply..." : "Ask anything about this finding..."}
+                      style={{ flex: 1, padding: "8px 12px", borderRadius: "8px", background: "var(--bg)", border: "1px solid var(--border)", color: "#fff", fontSize: "12px", outline: "none" }}
+                    />
+                    <button
+                      className="secondary-button"
+                      disabled={aiLoading[activeFinding.id]}
+                      onClick={() => handleAskAi(activeFinding, aiInputs[activeFinding.id] ?? "")}
+                      style={{ minHeight: "34px", fontSize: "12px", borderColor: "var(--cyan)", color: "var(--cyan)" }}
+                    >
+                      Send
+                    </button>
+                  </div>
                 </>
               ) : null}
             </div>

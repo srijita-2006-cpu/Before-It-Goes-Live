@@ -16,7 +16,7 @@ import {
   ArrowUpRight,
   Layers,
 } from "lucide-react";
-import { askAI } from "../api.ts";
+import { askAI, type ChatTurn } from "../api.ts";
 
 export type NodeData = {
   id: string;
@@ -823,6 +823,7 @@ export default function GraphView({
   const [aiLoading, setAiLoading] = useState(false);
   const [aiAsked, setAiAsked] = useState<string | null>(null);
   const [aiNote, setAiNote] = useState<string | null>(null);
+  const [aiHistory, setAiHistory] = useState<ChatTurn[]>([]); // conversation about the selected node
 
   function handleSelectNode(node: NodeData) {
     if (selectedNode?.id !== node.id) {
@@ -831,6 +832,7 @@ export default function GraphView({
       setAiSource(null);
       setAiAsked(null);
       setAiNote(null);
+      setAiHistory([]);
       setAiQuestion("");
     }
   }
@@ -876,7 +878,9 @@ export default function GraphView({
         node_text: `${selectedNode.title}: ${selectedNode.subtitle}`,
         question: q.trim(),
         node_type: selectedNode.technicalType,
+        history: aiHistory,
       });
+      setAiHistory((h) => [...h, { role: "user", text: q.trim() }, { role: "ai", text: res.answer }]);
       setAiAnswer(res.answer);
       setAiSource(res.source || "AI Copilot");
       const extra = res as { live?: boolean; reason?: string }; // extra fields from the backend
@@ -1379,6 +1383,11 @@ export default function GraphView({
                 </div>
               ) : aiAnswer ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {aiHistory.slice(0, -2).map((turn, i) => (
+                    <p key={i} style={{ margin: 0, fontSize: 10, lineHeight: 1.5, color: "var(--muted)", fontStyle: turn.role === "user" ? "italic" : "normal" }}>
+                      {turn.role === "user" ? "You: " : "AI: "}{turn.text}
+                    </p>
+                  ))}
                   <div
                     style={{
                       background: "rgba(18, 196, 212, 0.08)",
@@ -1407,6 +1416,20 @@ export default function GraphView({
                       </p>
                     )}
                   </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {["Explain that more simply", "Give a concrete example", "Make it shorter"].map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        className="secondary-button"
+                        disabled={aiLoading}
+                        onClick={() => handleAskAI(p)}
+                        style={{ fontSize: 10, padding: "5px 9px" }}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
                   <button
                     type="button"
                     className="secondary-button"
@@ -1414,11 +1437,12 @@ export default function GraphView({
                       setAiAnswer(null);
                       setAiAsked(null);
                       setAiNote(null);
+                      setAiHistory([]);
                       setAiQuestion("");
                     }}
                     style={{ fontSize: 10, padding: "6px 10px", alignSelf: "flex-start", gap: 4 }}
                   >
-                    <RefreshCw size={11} /> Ask another question on this node
+                    <RefreshCw size={11} /> New topic on this node
                   </button>
                 </div>
               ) : (
@@ -1468,7 +1492,7 @@ export default function GraphView({
             <div style={{ display: "flex", gap: 6 }}>
               <input
                 type="text"
-                placeholder="Ask Gemini anything about this node..."
+                placeholder={aiAnswer ? "Ask a follow-up, e.g. explain it more simply..." : "Ask Gemini anything about this node..."}
                 value={aiQuestion}
                 onChange={(e) => setAiQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !aiLoading && handleAskAI()}
