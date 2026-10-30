@@ -12,8 +12,8 @@ export default function AiHelp() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       sender: "ai",
-      text: "👋 Welcome to the Brand & Compliance AI Help Center. You can ask me any questions about approved claims, regulatory policies (FDA, FTC, EU Cosmetics), or ask me to draft compliant copy before you submit it.",
-      source: "Brand Compliance Copilot",
+      text: "Ask about a finding or configured rule. AI explanations are informational; generated corrections still require deterministic validation and your approval.",
+      source: "About this assistant",
       timestamp: "Just now",
     },
   ]);
@@ -44,16 +44,19 @@ export default function AiHelp() {
       const aiMsg: ChatMessage = {
         sender: "ai",
         text: res.answer,
-        source: (res as { live?: boolean }).live === false ? `${res.source} (offline: ${(res as { reason?: string }).reason ?? "no live model"})` : res.source,
+        source: res.source,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, aiMsg]);
-    } catch {
+    } catch (error) {
       setMessages((prev) => [
         ...prev,
         {
           sender: "ai",
-          text: "Sorry, I could not connect to the backend server. Please make sure the Python server is running.",
+          text: error instanceof Error
+            ? error.message
+            : "The AI request failed. Check the backend configuration and try again.",
+          source: "AI service error",
           timestamp: "Error",
         },
       ]);
@@ -79,11 +82,11 @@ export default function AiHelp() {
             Brand & Regulatory AI Help Center
           </h1>
           <span style={{ fontSize: "11px", background: "#6366f120", color: "#a5b4fc", border: "1px solid #6366f150", padding: "3px 10px", borderRadius: "12px", fontWeight: 600 }}>
-            Gemini AI Copilot
+            Configured AI Provider
           </span>
         </div>
         <p style={{ margin: 0, color: "#94a3b8", fontSize: "14px" }}>
-          Ask compliance questions, verify regulatory boundaries, and get pre-approved marketing phrasing before creating assets.
+          Ask about compliance findings and configured rules. AI responses do not replace rule checks or human review.
         </p>
       </div>
 
@@ -155,7 +158,7 @@ export default function AiHelp() {
           ))}
           {loading && (
             <div style={{ alignSelf: "flex-start", background: "#1e293b", padding: "10px 16px", borderRadius: "12px", color: "#94a3b8", fontSize: "13px" }}>
-              ✨ Gemini AI is analyzing brand guidelines...
+              ✨ The configured AI provider is reviewing the supplied context...
             </div>
           )}
         </div>

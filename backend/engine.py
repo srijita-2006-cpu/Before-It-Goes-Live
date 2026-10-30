@@ -1,7 +1,7 @@
 """
 backend/engine.py - Before It Goes Live Audit & Compliance Engine
 Full implementation of all 10 engine functions:
-1. extract_text_from_file (Gemini Multimodal Vision, PDF, PPTX, DOCX)
+1. extract_text_from_file (Configured multimodal vision provider, PDF, PPTX, DOCX)
 2. extract_text_from_url (Web scraper)
 3. extract_claims (Syntactic clause & assertion parser)
 4. match_claims_to_rules (Crash-proof defensive regulatory & brand matcher)
@@ -15,10 +15,11 @@ Full implementation of all 10 engine functions:
 
 import re
 import io
-import os
 import base64
 import requests
 from typing import List, Dict, Any, Optional
+
+import ai_provider
 
 # ==============================================================================
 # 1. FILE & URL TEXT EXTRACTION
@@ -27,7 +28,7 @@ from typing import List, Dict, Any, Optional
 def extract_text_from_file(arg1: Any, arg2: Any = None, gemini_key: str = None) -> str:
     """
     Extracts text from files:
-    - Images: Uses Gemini Multimodal Vision to inspect headlines, small disclaimers, and badges.
+    - Images: Uses the configured multimodal AI provider to transcribe visible text.
     - PDF: Iterates every single page.
     - PPTX: Iterates every slide, shape, and speaker note.
     - DOCX: Iterates all paragraphs.
@@ -41,37 +42,36 @@ def extract_text_from_file(arg1: Any, arg2: Any = None, gemini_key: str = None) 
         file_bytes = bytes(arg2 or b"") if arg2 else b""
 
     ext = filename.lower().split('.')[-1]
-    effective_key = gemini_key or os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6JUO4Pd16fk1Tza8WO-G2Q9L4NEGHSke99NciEflH67hQ")
-
-    # A. IMAGES (Gemini Vision OCR + Fine-print inspection)
+    # A. IMAGES (provider-backed visual text extraction)
     if ext in ['png', 'jpg', 'jpeg', 'webp']:
-        if file_bytes and effective_key:
-            try:
-                b64_data = base64.b64encode(file_bytes).decode('utf-8')
-                mime_type = "image/png" if ext == "png" else "image/jpeg"
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={effective_key.strip()}"
-                payload = {
-                    "contents": [{
-                        "parts": [
-                            {"text": "Transcribe ALL text visible in this image verbatim. Include headlines, body copy, tiny fine-print disclaimers, footnote text, prices, and any text inside seals or badges. Return only the extracted text."},
-                            {
-                                "inline_data": {
-                                    "mime_type": mime_type,
-                                    "data": b64_data
-                                }
-                            }
-                        ]
-                    }]
-                }
-                res = requests.post(url, json=payload, timeout=15)
-                if res.status_code == 200:
-                    data = res.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        return candidates[0]["content"]["parts"][0]["text"].strip()
-            except Exception as e:
-                print(f"[Gemini Vision OCR Error]: {e}")
-        return f"[Image file uploaded: {filename}. Visual marketing claims scanned.]"
+        if not file_bytes:
+            raise ValueError("The image file is empty.")
+        try:
+            mime_type = "image/png" if ext == "png" else "image/jpeg"
+            extracted_text = ai_provider.generate(
+                [
+                    {"text": "Transcribe visible text in this image verbatim. Return only the extracted text."},
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64.b64encode(file_bytes).decode("ascii"),
+                        }
+                    },
+                ],
+                json_mode=False,
+                timeout=15,
+                raise_on_error=True,
+                api_key_override=gemini_key,
+            )
+            extracted_text = (extracted_text or "").strip()
+            if not extracted_text:
+                raise RuntimeError("AI image extraction returned no readable text.")
+            return extracted_text
+        except ai_provider.AIConfigurationError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except Exception as exc:
+            print(f"[AI Vision extraction error]: {type(exc).__name__}.")
+            raise RuntimeError("Visual image extraction failed; the image was not verified.") from exc
 
     # B. PDF (Every single page scan)
     elif ext == 'pdf':
@@ -155,50 +155,6 @@ def extract_claims(text: str) -> List[Dict[str, Any]]:
     return claims
 
 
-DEFAULT_COMPLIANCE_RULES = [
-    {
-        "id": "BR-01",
-        "title": "No Absolute Medical Reversal Claims",
-        "rule_category": "Clinical & Regulatory",
-        "severity": "High",
-        "pattern": r"\b(100%\s*guaranteed|miracle\s*cure|reverse\s*aging|cures?|reverses?\s*aging)\b",
-        "approved_statement": "reduces appearance of fine lines over 4 weeks",
-        "explanation": "Absolute medical claims violate FDA cosmetic rules. Cosmetic formulations cannot promise biological reversal without clinical drug clearance.",
-        "suggestion": "visibly enhances skin radiance with continuous daily care"
-    },
-    {
-        "id": "BR-02",
-        "title": "Organic Ingredient Certification Threshold",
-        "rule_category": "Formulation & Science",
-        "severity": "Medium",
-        "pattern": r"\b(100%\s*organic|pure\s*organic|zero\s*carbon|100%\s*eco-friendly)\b",
-        "approved_statement": "95% certified organic extracts",
-        "explanation": "Specification confirms 95% certified organic extracts. '100% organic' triggers FTC false advertising and Green Guides penalties.",
-        "suggestion": "formulated with 95% certified organic botanical extracts"
-    },
-    {
-        "id": "BR-03",
-        "title": "Promotional Price Expiration Mandate",
-        "rule_category": "Commercial & Pricing",
-        "severity": "Low",
-        "pattern": r"\b(\$\d+|flash\s*promo|discount)\b",
-        "approved_statement": "Promotional flash sale prices must state expiration deadline",
-        "explanation": "Promotional pricing mentioned without a conspicuous expiration disclosure violates FTC deceptive pricing guides.",
-        "suggestion": "only $49 (Flash promotional offer valid through end of month)"
-    },
-    {
-        "id": "BR-04",
-        "title": "Comparative Superiority Benchmark",
-        "rule_category": "Advertising Standards",
-        "severity": "Low",
-        "pattern": r"\b(no\s*other\s*cream\s*works\s*better|most\s*powerful\s*formula|best\s*on\s*the\s*market)\b",
-        "approved_statement": "Designed to complement your everyday skincare routine",
-        "explanation": "Market superiority claims need comparative bench testing documentation and explicit competitor disclosures.",
-        "suggestion": "designed to complement and elevate your daily skincare routine"
-    }
-]
-
-
 def match_claims_to_rules(arg1: Any, arg2: Any = None, doc_id: str = "") -> List[Dict[str, Any]]:
     """
     Compares extracted claims against brand guidelines.
@@ -231,16 +187,11 @@ def match_claims_to_rules(arg1: Any, arg2: Any = None, doc_id: str = "") -> List
         else:
             normalized_claims.append({"text": str(c), "keywords": []})
 
-    # 3. Pull rules from database if cursor available, else fallback
-    rules = DEFAULT_COMPLIANCE_RULES
+    # 3. Only saved company rules may produce findings.
+    rules = []
     if cursor:
-        try:
-            cursor.execute("SELECT * FROM brand_rules")
-            db_rules = cursor.fetchall()
-            if db_rules:
-                rules = [dict(r) for r in db_rules]
-        except Exception:
-            rules = DEFAULT_COMPLIANCE_RULES
+        cursor.execute("SELECT * FROM brand_rules WHERE status = 'active'")
+        rules = [dict(r) for r in cursor.fetchall()]
 
     # 4. Match patterns
     finding_idx = 1
@@ -266,52 +217,17 @@ def match_claims_to_rules(arg1: Any, arg2: Any = None, doc_id: str = "") -> List
                     "severity": rule.get("severity", "Medium"),
                     "flagged_text": flagged_span,
                     "location": f"Marketing claim: '{flagged_span}'",
-                    "explanation": rule.get("explanation") or f"Violates {rule.get('title')}: {rule.get('approved_statement')}",
-                    "evidence": rule.get("evidence") or f"Brand Guideline §4.2: {rule.get('title')}",
-                    "suggestion": rule.get("suggestion") or rule.get("approved_statement", "Review phrasing with compliance"),
-                    "suggested_fix": rule.get("suggestion") or rule.get("approved_statement", "Review phrasing with compliance"),
+                    "explanation": rule.get("explanation") or (
+                        f"The phrase '{flagged_span}' matches a restriction in configured rule "
+                        f"'{rule.get('title') or rule.get('id')}'."
+                    ),
+                    "evidence": rule.get("exact_quote") or rule.get("source_filename") or str(rule.get("id") or ""),
+                    "suggestion": "",
+                    "suggested_fix": "",
                     "status": "open",
                     "doc_id": doc_id
                 })
                 finding_idx += 1
-
-    # 5. Guaranteed sample findings if user tests typical demo copy
-    if not findings:
-        full_text = " ".join([c.get("text", "") for c in normalized_claims]).lower()
-        if "reverse" in full_text or "aging" in full_text:
-            findings.append({
-                "id": f"finding-{finding_idx}",
-                "rule_id": "BR-01",
-                "title": "Absolute medical reversal claim",
-                "category": "Clinical & Regulatory",
-                "severity": "High",
-                "flagged_text": "reverse signs of aging in 7 days",
-                "location": "Body copy claim",
-                "explanation": "Absolute medical claim violates FDA cosmetic rules. Approved wording is 'reduces appearance of fine lines over 4 weeks'.",
-                "evidence": "Clinical dossier #2024-B confirms improvement at 28 days, not 7 days.",
-                "suggestion": "support natural renewal with continuous daily use",
-                "suggested_fix": "support natural renewal with continuous daily use",
-                "status": "open",
-                "doc_id": doc_id
-            })
-            finding_idx += 1
-        if "100% organic" in full_text or "organic" in full_text:
-            findings.append({
-                "id": f"finding-{finding_idx}",
-                "rule_id": "BR-02",
-                "title": "Organic threshold claim",
-                "category": "Formulation & Science",
-                "severity": "Medium",
-                "flagged_text": "100% organic, pure skin perfection",
-                "location": "Headline claim",
-                "explanation": "Specification confirms 95% certified organic extracts. '100%' claim triggers false advertising penalties.",
-                "evidence": "Brand Guideline §4.2: Avoid superlative and absolute claims without certified trial results.",
-                "suggestion": "visibly enhances radiance with pure botanical care.",
-                "suggested_fix": "visibly enhances radiance with pure botanical care.",
-                "status": "open",
-                "doc_id": doc_id
-            })
-            finding_idx += 1
 
     return findings
 

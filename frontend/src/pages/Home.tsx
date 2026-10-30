@@ -1,316 +1,360 @@
-import { useState, useRef } from "react";
-import { uploadContent, uploadBulkContent } from "../api.ts";
+import { useState, useRef, useEffect } from "react";
+import {
+  API_BASE,
+  MAX_BATCH_BYTES,
+  MAX_BATCH_FILES,
+  MAX_FILE_BYTES,
+  MAX_TEXT_CHARACTERS,
+  uploadContent,
+  uploadBulkContent,
+  getBulkCapacity,
+  getBulkJob,
+} from "../api.ts";
+import ConfigureRules from "../components/ConfigureRules.tsx";
 
 interface HomeProps {
   content?: string;
   setContent?: (val: string) => void;
   onReview?: () => void;
+  onAssetChange?: (asset: { name: string; fileType: string }) => void;
+  onShowAssetNotice?: () => void;
 }
 
 export interface StagedAsset {
   id: string;
   name: string;
-  fileType: "image" | "pdf" | "pptx" | "text";
+  fileType: "image" | "pdf" | "pptx" | "text" | "docx" | "unsupported";
   category: string;
   priority: "high" | "medium" | "low";
   priorityLabel: string;
   size: string;
   dataUrl?: string;
   textContent?: string;
+  findings?: any[];
+  headline?: string;
+  auditStatus?: string;
+  riskLevel?: string;
+  errorMessage?: string;
   cleared?: boolean;
   rawFile?: File;
 }
 
-/**
- * Dynamic Client-Side PDF Parser.
- * Detects the true page count (whether 1, 5, 40, or 100+ pages) from the PDF object hierarchy
- * and formats every page with --- [Page X] --- demarcations without any hardcoded limits.
- */
-export async function parseUploadedPdf(file: File): Promise<{ text: string; pageCount: number }> {
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    const latin1Text = new TextDecoder("latin1").decode(bytes);
-
-    // 1. Detect actual page count dynamically from PDF object hierarchy
-    let detectedPages = 1;
-
-    // A: Check /Count in PDF catalog dictionary
-    const countMatches = [...latin1Text.matchAll(/\/Count\s+(\d+)/gi)];
-    if (countMatches.length > 0) {
-      const maxCount = Math.max(
-        ...countMatches
-          .map((m) => parseInt(m[1], 10))
-          .filter((n) => !isNaN(n) && n > 0 && n < 10000)
-      );
-      if (maxCount > 0) {
-        detectedPages = maxCount;
-      }
-    }
-
-    // B: Cross-check with individual /Type /Page objects
-    const pageObjMatches = latin1Text.match(/\/Type\s*\/Page\b(?!\s*s)/gi);
-    if (pageObjMatches && pageObjMatches.length > detectedPages) {
-      detectedPages = pageObjMatches.length;
-    }
-
-    // 2. Extract textual strings from PDF text streams
-    const textPieces: string[] = [];
-
-    // Parenthesized string operators: (text) Tj
-    const tjRegex = /\(([^()]{2,200})\)\s*Tj/g;
-    let match: RegExpExecArray | null;
-    while ((match = tjRegex.exec(latin1Text)) !== null) {
-      const clean = match[1]
-        .replace(/\\([()\\])/g, "$1")
-        .replace(/\\[nrtbf]/g, " ")
-        .trim();
-      if (
-        clean.length >= 3 &&
-        !clean.startsWith("/") &&
-        !clean.includes("Font") &&
-        !clean.includes("Length")
-      ) {
-        textPieces.push(clean);
-      }
-    }
-
-    // Array string operators: [(t1) 20 (t2)] TJ
-    const tjArrayRegex = /\[(.*?)\]\s*TJ/g;
-    while ((match = tjArrayRegex.exec(latin1Text)) !== null) {
-      const inner = match[1];
-      const innerStrings = inner.match(/\(([^()]+)\)/g);
-      if (innerStrings) {
-        const joined = innerStrings
-          .map((s) => s.slice(1, -1).replace(/\\([()\\])/g, "$1"))
-          .join(" ")
-          .trim();
-        if (joined.length >= 3 && !joined.startsWith("/")) {
-          textPieces.push(joined);
-        }
-      }
-    }
-
-    const docTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-
-    // 3. Assemble dynamic multi-page sections for ALL detected pages
-    if (detectedPages > 0) {
-      const pageSections: string[] = [];
-      const piecesPerPage =
-        textPieces.length > 0 ? Math.max(1, Math.ceil(textPieces.length / detectedPages)) : 0;
-
-      for (let p = 1; p <= detectedPages; p++) {
-        let pageContent = "";
-        if (textPieces.length > 0) {
-          const start = (p - 1) * piecesPerPage;
-          const slice = textPieces.slice(start, start + piecesPerPage);
-          pageContent = slice.join("\n");
-        }
-
-        if (!pageContent.trim()) {
-          pageContent = `${docTitle} • Page ${p} of ${detectedPages}\nReviewing claims, ingredient specifications, and regulatory disclosures for Page ${p}.`;
-        }
-
-        pageSections.push(`--- [Page ${p}] ---\n${pageContent}`);
-      }
-
-      return {
-        text: pageSections.join("\n\n"),
-        pageCount: detectedPages,
-      };
-    }
-  } catch (e) {
-    console.warn("Client PDF extraction fallback:", e);
-  }
-
-  const docTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-  return {
-    text: `--- [Page 1] ---\n${docTitle} • Uploaded Document\nContent extracted from ${file.name}. Reviewing compliance claims against active brand governance rules.`,
-    pageCount: 1,
-  };
+export async function parseUploadedPdf(
+  file: File
+): Promise<{ text: string; pageCount: number }> {
+  // PDF extraction is performed by the backend, which can handle compressed
+  // streams and preserve real page text. Never label guessed text as extracted.
+  throw new Error(
+    `Text extraction for ${file.name} must be completed by the backend. Upload the PDF to continue.`
+  );
 }
 
-export default function Home({ content, setContent, onReview }: HomeProps) {
+export default function Home({
+  content,
+  setContent,
+  onReview,
+  onAssetChange,
+  onShowAssetNotice,
+}: HomeProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFormat, setSelectedFormat] = useState<"text" | "pdf" | "pptx" | "image" | "bulk">("text");
-  const [step, setStep] = useState<"input" | "rules">("input");
-  const [stagedAssets, setStagedAssets] = useState<StagedAsset[]>([]);
-  const [pasteText, setPasteText] = useState(content || "");
-  const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
+  const [selectedFormat, setSelectedFormat] = useState<
+    "text" | "pdf" | "pptx" | "image" | "bulk"
+  >("text");
+  const [step, setStep] = useState<"input" | "rules">(() => {
+    return (localStorage.getItem("b4live_home_step") as "input" | "rules") || "input";
+  });
+  const [stagedAssets, setStagedAssets] = useState<StagedAsset[]>(() => {
+    try {
+      const saved = localStorage.getItem("b4live_staged_assets");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+  const [pasteText, setPasteText] = useState(() => {
+    return localStorage.getItem("b4live_content") || content || "";
+  });
 
-  // Active Rule Checklist
-  const [activeRules, setActiveRules] = useState([
-    { id: "BR-01", name: "No Absolute Medical Reversal Claims (FDA Cosmetic)", scope: "Global", enabled: true },
-    { id: "BR-02", name: "Organic Purity & Ingredient Certification (FTC Green Guides §260)", scope: "Global", enabled: true },
-    { id: "BR-03", name: "FTC Endorsement Guides §255 (Dermatologist Survey Verification)", scope: "Visual Ads", enabled: true },
-    { id: "BR-04", name: "Promotional Pricing Expiration Mandate", scope: "Direct Copy", enabled: true },
-    { id: "BR-05", name: "Brand Voice & Elevated Tone Guide", scope: "Global", enabled: true },
-    { id: "BR-06", name: "Clinical Study Dossier Citation Mandate", scope: "Brochures / PDF", enabled: true },
-  ]);
-  const [customRule, setCustomRule] = useState("");
+  useEffect(() => {
+    localStorage.setItem("b4live_home_step", step);
+  }, [step]);
+
+  useEffect(() => {
+    try {
+      const serializable = stagedAssets.map(({ rawFile, ...rest }) => rest);
+      localStorage.setItem("b4live_staged_assets", JSON.stringify(serializable));
+    } catch {
+      // ignore
+    }
+  }, [stagedAssets]);
+
+  useEffect(() => {
+    localStorage.setItem("b4live_content", pasteText);
+    setContent?.(pasteText);
+  }, [pasteText, setContent]);
+  const [loading, setLoading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [pendingBatchJobId, setPendingBatchJobId] = useState(
+    () => sessionStorage.getItem("bulk_job_id") || ""
+  );
 
   const samples = [
     {
-      label: "🧴 Clinical & Medical Violation",
-      text: "Introducing our revolutionary Revive Glow Serum. Clinically proven to reverse aging in just 3 days! Formulated with 100% organic botanicals. Flash launch price only $49.",
+      label: "🥤 Cold Drinks Ad Violation",
+      text: "New Arctic Surge Cola! Guaranteed 100% natural mountain water. Scientifically proven to incinerate body fat and boost metabolism in 3 days! Unbeatable #1 soda worldwide.",
     },
     {
-      label: "🎭 Brand Tone & Hype Violation",
-      text: "THIS IS THE CRAZIEST DEAL EVER - BUY NOW OR YOU'LL REGRET IT! Our serum is an insane discount that will destroy all your wrinkles overnight!",
+      label: "⚖️ Law Firm Ad Violation",
+      text: "Smith & Associates Injury Law. We guarantee you win your settlement or pay $0! Voted the #1 personal injury attorneys in America with 100% success rate on all cases.",
     },
     {
-      label: "📝 Grammar & Style Guide Drift",
-      text: "Customers love our formula because there product is clinically proven and delivers results irregardless of skin type. beforeitgoeslive verified.",
+      label: "🧴 Cosmetic Brand Violation",
+      text: "Revive Glow Serum. Clinically formulated to reverse aging in 7 days! 100% organic botanicals. Flash promo price only $49.",
     },
     {
-      label: "💰 FTC Pricing & Promotion Drift",
-      text: "Get the complete Glow Bundle for only $49! Flash sale discount with no exclusions.",
-    },
-    {
-      label: "🌱 Greenwashing / Eco Claim",
-      text: "Made with 100% eco-friendly zero-carbon packaging and completely sustainable natural botanical distillates.",
+      label: "💻 Tech / SaaS Guarantee",
+      text: "Our AI platform guarantees 100% uptime with zero errors and outperforms every competitor on the market permanently.",
     },
   ];
 
-  // Trigger file picker
-  const handleTriggerPicker = (fmtId: "text" | "pdf" | "pptx" | "image" | "bulk") => {
+  const handleTriggerPicker = (
+    fmtId: "text" | "pdf" | "pptx" | "image" | "bulk"
+  ) => {
     setSelectedFormat(fmtId);
     if (fmtId === "text") return;
     if (fileInputRef.current) {
-      if (fmtId === "pdf") {
-        fileInputRef.current.accept = ".pdf";
-      } else if (fmtId === "pptx") {
-        fileInputRef.current.accept = ".pptx,.ppt";
-      } else if (fmtId === "image") {
-        fileInputRef.current.accept = ".png,.jpg,.jpeg,.webp";
-      } else {
-        fileInputRef.current.accept = ".pdf,.pptx,.png,.jpg,.jpeg,.webp,.docx,.txt";
-      }
+      if (fmtId === "pdf") fileInputRef.current.accept = ".pdf";
+      else if (fmtId === "pptx") fileInputRef.current.accept = ".pptx";
+      else if (fmtId === "image")
+        fileInputRef.current.accept =
+          ".png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff";
+      else
+        fileInputRef.current.accept =
+          ".pdf,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,.docx,.txt,.md,.csv,.zip";
       fileInputRef.current.click();
     }
   };
 
-  // Helper to categorize and determine risk priority
-  const categorizeFile = (
-    file: File
-  ): { type: "image" | "pdf" | "pptx" | "text"; category: string; priority: "high" | "medium" | "low"; priorityLabel: string } => {
+  const categorizeFile = (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
-    if (["png", "jpg", "jpeg", "webp"].includes(ext) || file.type.startsWith("image/")) {
+    if (
+      ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff"].includes(ext) ||
+      file.type.startsWith("image/")
+    ) {
       return {
-        type: "image",
-        category: "Visual Ad Creative / Packaging",
-        priority: "high",
-        priorityLabel: "🚨 High Risk (Visual Ad Gate)",
+        type: "image" as const,
+        category: "Visual Creative Ad / Packaging",
+        priority: "high" as const,
+        priorityLabel: "🚨 High Risk (Visual Gate)",
       };
     }
     if (ext === "pdf") {
       return {
-        type: "pdf",
-        category: "Multi-Page Brochure / Catalog",
-        priority: "medium",
-        priorityLabel: "⚠️ Medium Risk (Dossier Citation Gate)",
+        type: "pdf" as const,
+        category: "Multi-Page Brochure / Dossier",
+        priority: "medium" as const,
+        priorityLabel: "⚠️ Medium Risk (Citation Gate)",
       };
     }
-    if (["pptx", "ppt"].includes(ext)) {
+    if (ext === "pptx") {
       return {
-        type: "pptx",
+        type: "pptx" as const,
         category: "Slide Deck / Presentation",
-        priority: "medium",
-        priorityLabel: "⚠️ Medium Risk (Claims Substantiation)",
+        priority: "medium" as const,
+        priorityLabel: "⚠️ Medium Risk (Substantiation)",
+      };
+    }
+    if (ext === "docx") {
+      return {
+        type: "docx" as const,
+        category: "Document / Brief",
+        priority: "medium" as const,
+        priorityLabel: "⚠️ Medium Risk (Review)",
+      };
+    }
+    if (ext === "zip") {
+      return {
+        type: "text" as const,
+        category: "Campaign Bundle (ZIP)",
+        priority: "high" as const,
+        priorityLabel: "🚨 Campaign Bundle",
       };
     }
     return {
-      type: "text",
+      type: "text" as const,
       category: "Marketing Copy / Press Release",
-      priority: "low",
-      priorityLabel: "🟢 Standard Risk (Tone & Promotion Gate)",
+      priority: "low" as const,
+      priorityLabel: "🟢 Standard Risk (Tone Gate)",
     };
   };
 
-  // Dynamic Multi-File Intake Handler (supports 1 to 100+ files and arbitrary page counts)
-  const handleFileUpload = async (files: File[]) => {
-    if (files.length === 0) return;
+  const stageBulkResult = (jobResult: any): StagedAsset[] | false => {
+    const rows = Array.isArray(jobResult?.files) ? jobResult.files : [];
+    const failedRows = rows.filter((row: any) => row.status !== "processed" || !row.document_id);
+    const readyRows = rows.filter((row: any) => row.status === "processed" && row.document_id);
+    if (!readyRows.length) {
+      const reasons = failedRows.map((row: any) => `${row.original_filename}: ${row.error_message || row.status}`).join("; ");
+      setUploadError(`No uploaded assets could be prepared for review.${reasons ? ` ${reasons}` : " Check the batch status and retry with supported files."}`);
+      return false;
+    }
+
+    const assets: StagedAsset[] = readyRows.map((row: any) => {
+      const type = row.file_type as StagedAsset["fileType"];
+      let findings: any[];
+      try {
+        findings = JSON.parse(row.findings_json);
+      } catch {
+        throw new Error(`The backend returned invalid finding data for ${row.original_filename}. Retry checking the saved batch status.`);
+      }
+      if (!Array.isArray(findings)) {
+        throw new Error(`The backend returned an invalid findings list for ${row.original_filename}. Retry checking the saved batch status.`);
+      }
+      const categoryByType: Record<string, string> = {
+        image: "Visual Creative Ad / Packaging",
+        pdf: "Multi-Page Brochure / Dossier",
+        pptx: "Slide Deck / Presentation",
+        docx: "Corporate Copy / Document",
+        text: "Plain Text Copy / Markdown",
+      };
+      const priority = type === "image" ? "high" : type === "text" ? "low" : "medium";
+      return {
+        id: row.document_id,
+        name: row.original_filename,
+        fileType: type,
+        category: categoryByType[type] || "Uploaded Asset",
+        priority,
+        priorityLabel: priority === "high" ? "High priority" : priority === "medium" ? "Review" : "Standard review",
+        size: "Uploaded",
+        dataUrl: type === "image" ? `${API_BASE}/api/bulk/file/${encodeURIComponent(row.id)}` : undefined,
+        textContent: row.text_content || "",
+        findings,
+        headline: row.headline || "",
+        auditStatus: row.audit_status || "Incomplete Analysis",
+        riskLevel: row.risk_level || "Analysis Incomplete",
+        errorMessage: row.error_message || "",
+        cleared: false,
+      };
+    });
+
+    setStagedAssets(assets);
+    (window as any).__B4LIVE_QUEUE__ = assets;
+    onAssetChange?.({ name: assets[0].name, fileType: assets[0].fileType });
+    setStep("rules");
+    const incompleteRows = readyRows.filter((row: any) => row.audit_status === "Incomplete Analysis" || row.audit_status === "Analysis Incomplete");
+    const messages = [
+      ...(failedRows.length ? [`Files not processed: ${failedRows.map((row: any) => `${row.original_filename} (${row.error_message || row.status})`).join(", ")}.`] : []),
+      ...(incompleteRows.length ? [`Analysis is incomplete for: ${incompleteRows.map((row: any) => `${row.original_filename}${row.error_message ? ` — ${row.error_message}` : ""}`).join("; ")}. Do not treat these assets as cleared.`] : []),
+    ];
+    setUploadError(messages.join(" "));
+    sessionStorage.removeItem("bulk_job_id");
+    setPendingBatchJobId("");
+    return assets;
+  };
+
+  const checkPendingBatchStatus = async () => {
+    if (!pendingBatchJobId || loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
+      const result = await getBulkJob(pendingBatchJobId);
+      if (result?.job?.status !== "completed") {
+        setUploadError(`Batch ${pendingBatchJobId} is still processing (${result?.job?.processed_files || 0} of ${result?.job?.total_files || 0} files). Check again shortly; do not re-upload the same batch.`);
+        return;
+      }
+      stageBulkResult(result);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Could not check the batch status. The server job may still be running; retry this status check.");
+    } finally {
+      loadingRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const handleFileUpload = async (files: File[]) => {
+    if (files.length === 0) return;
+    if (loadingRef.current) return;
+    const isBatch = files.length > 1 || files.some((file) => file.name.toLowerCase().endsWith(".zip"));
+    if (files.length > MAX_BATCH_FILES) {
+      setUploadError(`A batch can contain at most ${MAX_BATCH_FILES} files. Split the selection and retry.`);
+      return;
+    }
+    if (files.some((file) => file.size === 0)) {
+      setUploadError("One or more selected files are empty. Choose non-empty files and retry.");
+      return;
+    }
+    if (files.some((file) => file.size > MAX_FILE_BYTES && !file.name.toLowerCase().endsWith(".zip"))) {
+      setUploadError("Each file must be 20 MiB or smaller. Choose smaller files and retry.");
+      return;
+    }
+    if (files.reduce((total, file) => total + file.size, 0) > MAX_BATCH_BYTES) {
+      setUploadError("The batch exceeds 50 MiB. Split it into smaller batches and retry.");
+      return;
+    }
+    const supportedExtensions = new Set([
+      "pdf", "pptx", "docx", "txt", "md", "csv",
+      "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff",
+    ]);
+    const unsupported = files.filter((file) => {
+      const extension = file.name.split(".").pop()?.toLowerCase() || "";
+      return extension === "zip" ? !isBatch : !supportedExtensions.has(extension);
+    });
+    if (unsupported.length) {
+      setUploadError(`Unsupported file type: ${unsupported.map((file) => file.name).join(", ")}. Choose PDF, PPTX, DOCX, TXT, MD, CSV, or a supported image.`);
+      return;
+    }
+    loadingRef.current = true;
+    setLoading(true);
+    setUploadError("");
+
+    try {
+      const isBatch = files.length > 1 || files.some((file) => file.name.toLowerCase().endsWith(".zip"));
+      if (isBatch) {
+        const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+        if (totalSize > MAX_BATCH_BYTES) {
+          throw new Error(`Selected files exceed the ${Math.round(MAX_BATCH_BYTES / (1024 * 1024))} MiB batch limit.`);
+        }
+        for (const file of files) {
+          if (!file.name.toLowerCase().endsWith(".zip") && file.size > MAX_FILE_BYTES) {
+            throw new Error(`${file.name} exceeds the ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MiB per-file limit.`);
+          }
+        }
+        if (files.length > MAX_BATCH_FILES) {
+          throw new Error(`Select at most ${MAX_BATCH_FILES} files per batch.`);
+        }
+        await getBulkCapacity({
+          file_count: files.length,
+          total_size: totalSize,
+          unsupported_count: 0,
+        });
+      }
+
       const newAssets: StagedAsset[] = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        if (file.size > MAX_FILE_BYTES && !file.name.toLowerCase().endsWith(".zip")) {
+          throw new Error(`${file.name} exceeds the ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MiB per-file limit.`);
+        }
         const { type, category, priority, priorityLabel } = categorizeFile(file);
-        const sizeKb = `${Math.round(file.size / 1024)} KB`;
-        let dataUrl: string | undefined = undefined;
-        let textContent: string | undefined = undefined;
-        let docId: string | undefined = undefined;
-
-        // 1. Send file to backend for authentic multi-page extraction via pypdf
-        try {
-          const formData = new FormData();
-          formData.append("file", file);
-          formData.append("title", file.name);
-          const res = await uploadContent(formData);
-          if (res) {
-            if (res.document_id) docId = res.document_id;
-            const backendText = res.text_content || res.raw_text || res.text;
-            if (backendText && backendText.trim().length > 0) {
-              textContent = backendText;
-            }
-          }
-        } catch (apiErr) {
-          console.warn(`Backend intake skipped for ${file.name}, using local parser:`, apiErr);
-        }
-
-        // 2. Local fallback if backend extraction did not populate textContent
-        try {
-          if (type === "image") {
-            dataUrl = await new Promise((resolve) => {
-              const reader = new FileReader();
-              reader.onload = (e) => resolve(e.target?.result as string);
-              reader.readAsDataURL(file);
-            });
-            if (!textContent) {
-              textContent = `--- [Visual Ad Creative] ---\nAsset: ${file.name}\nVisual creative pending OCR / Multimodal inspection.`;
-            }
-          } else if (type === "text") {
-            if (!textContent) {
-              textContent = await new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (e) => resolve(e.target?.result as string);
-                reader.readAsText(file);
-              });
-            }
-          } else if (type === "pdf") {
-            if (!textContent) {
-              const parsed = await parseUploadedPdf(file);
-              textContent = parsed.text;
-            }
-          } else if (type === "pptx") {
-            if (!textContent) {
-              textContent = `--- [Slide 1] ---\n${file.name.replace(/\.[^/.]+$/, "")} • Presentation Slide\nContent extracted from ${file.name}.`;
-            }
-          }
-        } catch (itemErr) {
-          console.warn(`Local file parsing failed for ${file.name}:`, itemErr);
-          if (!textContent) {
-            textContent = `Content extracted from ${file.name}.`;
-          }
-        }
-
         newAssets.push({
-          id: docId || `asset-${Date.now()}-${i}`,
+          id: `pending-${Date.now()}-${i}`,
           name: file.name,
           fileType: type,
           category,
           priority,
           priorityLabel,
-          size: sizeKb,
-          dataUrl,
-          textContent,
+          size: `${Math.round(file.size / 1024)} KB`,
+          auditStatus: "Awaiting rule selection",
           cleared: false,
           rawFile: file,
         });
       }
 
-      // Priority sort: High (Image Ads) -> Medium (PDFs / Decks) -> Low (Text)
       const priorityWeights = { high: 1, medium: 2, low: 3 };
       const sorted = [...stagedAssets, ...newAssets].sort(
         (a, b) => priorityWeights[a.priority] - priorityWeights[b.priority]
@@ -318,11 +362,13 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
       setStagedAssets(sorted);
       (window as any).__B4LIVE_QUEUE__ = sorted;
 
-      // Sync active item into sessionStorage
       const top = sorted[0];
+      onAssetChange?.({ name: top.name, fileType: top.fileType });
       sessionStorage.setItem("current_filename", top.name);
       sessionStorage.setItem("current_file_type", top.fileType);
-      if (top.id) sessionStorage.setItem("currentDocId", top.id);
+      sessionStorage.removeItem("currentDocId");
+      sessionStorage.removeItem("current_findings");
+      sessionStorage.removeItem("current_headline");
 
       if (top.fileType === "image" && top.dataUrl) {
         sessionStorage.setItem("current_image_url", top.dataUrl);
@@ -333,70 +379,139 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
       if (top.textContent) {
         setPasteText(top.textContent);
         sessionStorage.setItem("current_doc_text", top.textContent);
+        sessionStorage.setItem("current_original_doc_text", top.textContent);
         if (setContent) setContent(top.textContent);
       }
 
-      // Optional bulk registration in background
-      if (files.length > 1) {
-        try {
-          const bulkFormData = new FormData();
-          for (let i = 0; i < files.length; i++) {
-            bulkFormData.append("files", files[i]);
-          }
-          await uploadBulkContent(bulkFormData);
-        } catch {}
-      }
-
       setStep("rules");
-    } catch (err) {
-      console.warn("Upload processing error:", err);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Upload or analysis failed. No results were fabricated.");
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   };
 
-  const removeStagedAsset = (id: string) => {
-    setStagedAssets((prev) => {
-      const updated = prev.filter((a) => a.id !== id);
-      (window as any).__B4LIVE_QUEUE__ = updated;
-      return updated;
-    });
-  };
-
-  // Launch Review with Priority-Ranked Queue
-  const handleLaunchReview = async () => {
+  const handleLaunchReviewWithRules = async (activeRules: any[]) => {
+    if (loadingRef.current) return;
+    if (!stagedAssets.length && !pasteText.trim()) {
+      setUploadError("Paste non-empty content or upload a file before launching the review.");
+      return;
+    }
+    if (!stagedAssets.length && pasteText.length > MAX_TEXT_CHARACTERS) {
+      setUploadError(`Text is too long. Keep pasted content to ${MAX_TEXT_CHARACTERS.toLocaleString()} characters or fewer.`);
+      return;
+    }
+    loadingRef.current = true;
     setLoading(true);
     try {
+      const rulesJson = JSON.stringify(activeRules);
+      sessionStorage.setItem("active_rules", rulesJson);
+      let reviewAssets = stagedAssets;
+
       if (stagedAssets.length > 0) {
+        if (stagedAssets.some((asset) => !asset.rawFile)) {
+          throw new Error(
+            "These files were restored from a previous browser session and are no longer available for a new rule-scoped review. Re-select the original files, then choose the rules for this review."
+          );
+        }
+        const selectedRuleIds = JSON.stringify(activeRules.map((rule) => rule.id));
+        const isBatch =
+          stagedAssets.length > 1 ||
+          stagedAssets.some((asset) => asset.rawFile?.name.toLowerCase().endsWith(".zip"));
+        if (isBatch) {
+          const formData = new FormData();
+          for (const asset of stagedAssets) {
+            formData.append("files", asset.rawFile as File);
+          }
+          formData.append(
+            "name",
+            stagedAssets.length === 1 && stagedAssets[0].name.toLowerCase().endsWith(".zip")
+              ? stagedAssets[0].name.replace(/\.zip$/i, "")
+              : "Campaign Bundle"
+          );
+          formData.append("rules", selectedRuleIds);
+          const queued = await uploadBulkContent(formData);
+          sessionStorage.setItem("bulk_job_id", queued.job_id);
+          setPendingBatchJobId(queued.job_id);
+
+          let jobResult: any = null;
+          for (let attempt = 0; attempt < 180; attempt++) {
+            jobResult = await getBulkJob(queued.job_id);
+            if (jobResult?.job?.status === "completed") break;
+            await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          }
+          if (jobResult?.job?.status !== "completed") {
+            throw new Error(`Batch ${queued.job_id} is still processing. Check its status before retrying.`);
+          }
+          const prepared = stageBulkResult(jobResult);
+          if (!prepared) throw new Error("No batch files were successfully prepared for this rule-scoped review.");
+          reviewAssets = prepared;
+        } else {
+          const reviewedAssets: StagedAsset[] = [];
+          for (const asset of stagedAssets) {
+            const formData = new FormData();
+            formData.append("file", asset.rawFile as File);
+            formData.append("title", asset.name);
+            formData.append("rules", selectedRuleIds);
+            const response = await uploadContent(formData);
+            const imageUrl = asset.fileType === "image"
+              ? await new Promise<string>((resolve, reject) => {
+                  const reader = new FileReader();
+                  reader.onerror = () => reject(new Error(`Could not load preview for ${asset.name}.`));
+                  reader.onload = () => typeof reader.result === "string"
+                    ? resolve(reader.result)
+                    : reject(new Error(`Could not load preview for ${asset.name}.`));
+                  reader.readAsDataURL(asset.rawFile as File);
+                })
+              : undefined;
+            reviewedAssets.push({
+              ...asset,
+              id: response.document_id || asset.id,
+              textContent: response.text_content || response.raw_text || response.text || "",
+              findings: Array.isArray(response.findings) ? response.findings : [],
+              headline: response.headline || "",
+              auditStatus: response.status || "Incomplete Analysis",
+              riskLevel: response.risk_level || "Analysis Incomplete",
+              errorMessage: response.error_message || "",
+              dataUrl: imageUrl,
+            });
+          }
+          const priorityWeights = { high: 1, medium: 2, low: 3 };
+          reviewAssets = reviewedAssets.sort(
+            (left, right) => priorityWeights[left.priority] - priorityWeights[right.priority]
+          );
+        }
+        setStagedAssets(reviewAssets);
+        (window as any).__B4LIVE_QUEUE__ = reviewAssets;
         const priorityWeights = { high: 1, medium: 2, low: 3 };
-        const sortedQueue = [...stagedAssets].sort(
+        const sortedQueue = [...reviewAssets].sort(
           (a, b) => priorityWeights[a.priority] - priorityWeights[b.priority]
         );
 
         (window as any).__B4LIVE_QUEUE__ = sortedQueue;
-
-        try {
-          const safeQueue = sortedQueue.map((item) => ({
-            id: item.id,
-            name: item.name,
-            fileType: item.fileType,
-            category: item.category,
-            priority: item.priority,
-            priorityLabel: item.priorityLabel,
-            size: item.size,
-            cleared: item.cleared,
-            textContent: item.textContent,
-          }));
-          sessionStorage.setItem("bulk_queue", JSON.stringify(safeQueue));
-          sessionStorage.setItem("is_bulk_import", "true");
-        } catch (e) {
-          console.warn("SessionStorage queue sync:", e);
-        }
+        sessionStorage.setItem("bulk_queue", JSON.stringify(sortedQueue));
+        sessionStorage.setItem("is_bulk_import", "true");
 
         const topAsset = sortedQueue[0];
+        onAssetChange?.({ name: topAsset.name, fileType: topAsset.fileType || "text" });
         sessionStorage.setItem("current_filename", topAsset.name);
         sessionStorage.setItem("current_file_type", topAsset.fileType);
         if (topAsset.id) sessionStorage.setItem("currentDocId", topAsset.id);
+        if (topAsset.findings)
+          sessionStorage.setItem(
+            "current_findings",
+            JSON.stringify(topAsset.findings)
+          );
+        if (topAsset.headline)
+          sessionStorage.setItem("current_headline", topAsset.headline);
+        if (topAsset.auditStatus)
+          sessionStorage.setItem("current_audit_status", topAsset.auditStatus);
+        if (topAsset.riskLevel)
+          sessionStorage.setItem("current_risk_level", topAsset.riskLevel);
+        if (topAsset.errorMessage)
+          sessionStorage.setItem("current_error_message", topAsset.errorMessage);
+        else sessionStorage.removeItem("current_error_message");
 
         if (topAsset.fileType === "image" && topAsset.dataUrl) {
           sessionStorage.setItem("current_image_url", topAsset.dataUrl);
@@ -406,85 +521,235 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
 
         const resolvedText = topAsset.textContent || pasteText || "";
         sessionStorage.setItem("current_doc_text", resolvedText);
+        sessionStorage.setItem("current_original_doc_text", resolvedText);
         if (setContent) setContent(resolvedText);
 
         window.dispatchEvent(new Event("b4live-queue"));
       } else {
+        if (!pasteText.trim()) {
+          throw new Error("Add text or upload a file before launching the review.");
+        }
+        try {
+          const formData = new FormData();
+          formData.append("content", pasteText);
+          formData.append("rules", rulesJson);
+          const res = await uploadContent(formData);
+          if (res.document_id) sessionStorage.setItem("currentDocId", res.document_id);
+          sessionStorage.setItem("current_findings", JSON.stringify(res.findings || []));
+          if (res.headline) sessionStorage.setItem("current_headline", res.headline);
+          sessionStorage.setItem("current_audit_status", res.status || "Incomplete Analysis");
+          sessionStorage.setItem("current_risk_level", res.risk_level || "Analysis Incomplete");
+          if (res.error_message) sessionStorage.setItem("current_error_message", res.error_message);
+          else sessionStorage.removeItem("current_error_message");
+          if (typeof res.text_content === "string") {
+            sessionStorage.setItem("current_doc_text", res.text_content);
+            sessionStorage.setItem("current_original_doc_text", res.text_content);
+            if (setContent) setContent(res.text_content);
+          }
+        } catch (e) {
+          const message = e instanceof Error ? e.message : "The backend could not analyse the pasted content.";
+          setUploadError(message);
+          throw e instanceof Error ? e : new Error(message);
+        }
+
         sessionStorage.removeItem("bulk_queue");
         sessionStorage.removeItem("is_bulk_import");
         (window as any).__B4LIVE_QUEUE__ = null;
-        sessionStorage.setItem("current_filename", "Draft Copy.txt");
+        sessionStorage.setItem("current_filename", "Marketing Copy.txt");
         sessionStorage.setItem("current_file_type", "text");
+        onAssetChange?.({ name: "Marketing Copy.txt", fileType: "text" });
         sessionStorage.setItem("current_doc_text", pasteText);
+        sessionStorage.setItem("current_original_doc_text", pasteText);
         sessionStorage.removeItem("current_image_url");
         if (setContent) setContent(pasteText);
       }
 
       if (onReview) onReview();
-    } catch {
-      if (onReview) onReview();
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Could not start the review. The backend did not confirm success.");
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   };
 
   return (
-    <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "10px 20px 40px", color: "#f1f5f9" }}>
-      {/* Step Breadcrumb */}
-      <div style={{ display: "flex", justifyContent: "center", gap: "12px", marginBottom: "24px", fontSize: "12px" }}>
-        <span style={{ color: step === "input" ? "#12c4d4" : "#9299b7", fontWeight: 700 }}>
+    <div
+      style={{
+        maxWidth: "1100px",
+        margin: "0 auto",
+        padding: "10px 20px 40px",
+        color: "#f1f5f9",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          gap: "12px",
+          marginBottom: "24px",
+          fontSize: "12px",
+        }}
+      >
+        <span
+          style={{
+            color: step === "input" ? "#12c4d4" : "#9299b7",
+            fontWeight: 700,
+          }}
+        >
           1. Ingest Content & Multi-Format
         </span>
         <span style={{ color: "#252a48" }}>→</span>
-        <span style={{ color: step === "rules" ? "#12c4d4" : "#9299b7", fontWeight: 700 }}>
+        <span
+          style={{
+            color: step === "rules" ? "#12c4d4" : "#9299b7",
+            fontWeight: 700,
+          }}
+        >
           2. Rule Scope & Channel Gate
         </span>
         <span style={{ color: "#252a48" }}>→</span>
-        <span style={{ color: "#9299b7" }}>3. Interactive Review & Priority Queue</span>
+        <span style={{ color: "#9299b7" }}>
+          3. Interactive Review & Priority Queue
+        </span>
       </div>
+
+      <div
+        role="note"
+        style={{
+          maxWidth: "820px",
+          margin: "0 auto 18px",
+          padding: "11px 14px",
+          borderRadius: "10px",
+          border: "1px solid rgba(18, 196, 212, 0.35)",
+          background: "rgba(18, 196, 212, 0.07)",
+          color: "#cbd5e1",
+          fontSize: "12px",
+          lineHeight: 1.6,
+        }}
+      >
+        <strong style={{ color: "#12c4d4" }}>Review scope:</strong> Text and documents are checked only against the active rules you provide, upload and approve, or choose from the rule templates. They are not checked against every law, standard, or factual source. Results are not a certification or guarantee of compliance; verify the rules and evidence that apply to your content.
+      </div>
+
+      {uploadError && (
+        <div role="alert" style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "8px", border: "1px solid #ff6b6b70", background: "#ff6b6b12", color: "#ff9a9a", fontSize: "12px", lineHeight: 1.5 }}>
+          {uploadError}
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
+            {pendingBatchJobId && (
+              <button type="button" className="secondary-button" disabled={loading} onClick={() => void checkPendingBatchStatus()}>
+                {loading ? "Checking status…" : "Check batch status"}
+              </button>
+            )}
+            {step === "input" && (
+              <button type="button" className="secondary-button" disabled={loading} onClick={() => handleTriggerPicker("bulk")}>
+                Choose another file
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {step === "input" && (
         <div>
-          {/* Header */}
           <div style={{ textAlign: "center", marginBottom: "28px" }}>
-            <h1 style={{ fontSize: "34px", fontWeight: 800, margin: "0 0 8px 0", color: "#ffffff" }}>
+            <h1
+              style={{
+                fontSize: "34px",
+                fontWeight: 800,
+                margin: "0 0 8px 0",
+                color: "#ffffff",
+              }}
+            >
               Before It Goes Live
             </h1>
-            <p style={{ margin: "0 auto", maxWidth: "620px", color: "#9299b7", fontSize: "14px" }}>
-              Pre-flight release gate. Audit text, multi-page PDFs, slide decks, and image ads before release.
+            <p
+              style={{
+                margin: "0 auto",
+                maxWidth: "620px",
+                color: "#9299b7",
+                fontSize: "14px",
+              }}
+            >
+              Universal pre-flight compliance release gate. Audit beverage ads,
+              legal copy, skincare, retail flyers, or presentations.
             </p>
           </div>
 
-          {/* MULTI-FORMAT INGESTION CARDS */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "12px", marginBottom: "24px" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(5, 1fr)",
+              gap: "12px",
+              marginBottom: "24px",
+            }}
+          >
             {[
-              { id: "text", icon: "📝", name: "Direct Copy", desc: "Text & Drafts" },
-              { id: "pdf", icon: "📄", name: "PDF Document", desc: "Dynamic Page Scan" },
-              { id: "pptx", icon: "📊", name: "Slide Deck", desc: "All PPTX Slides" },
-              { id: "image", icon: "🖼️", name: "Ad Banner", desc: "Gemini Vision OCR" },
-              { id: "bulk", icon: "📦", name: "Bulk Import", desc: "Ctrl+Click Any Files" },
+              {
+                id: "text",
+                icon: "📝",
+                name: "Direct Copy",
+                desc: "Any Industry Draft",
+              },
+              {
+                id: "pdf",
+                icon: "📄",
+                name: "PDF Document",
+                desc: "Dynamic Page Scan",
+              },
+              {
+                id: "pptx",
+                icon: "📊",
+                name: "Slide Deck",
+                desc: "Presentation Slides",
+              },
+              {
+                id: "image",
+                icon: "🖼️",
+                name: "Ad Banner / Image",
+                desc: "AI visual review",
+              },
+              {
+                id: "bulk",
+                icon: "📦",
+                name: "Bulk Import",
+                desc: "Multi-files / ZIP / Folder",
+              },
             ].map((fmt) => (
               <div
                 key={fmt.id}
                 onClick={() => handleTriggerPicker(fmt.id as any)}
                 style={{
-                  background: selectedFormat === fmt.id ? "#171b35" : "#101329",
-                  border: selectedFormat === fmt.id ? "2px solid #12c4d4" : "1px solid #252a48",
+                  background:
+                    selectedFormat === fmt.id ? "#171b35" : "#101329",
+                  border:
+                    selectedFormat === fmt.id
+                      ? "2px solid #12c4d4"
+                      : "1px solid #252a48",
                   borderRadius: "14px",
                   padding: "16px 12px",
                   textAlign: "center",
                   cursor: "pointer",
-                  transition: "all 0.15s ease",
                 }}
               >
-                <div style={{ fontSize: "24px", marginBottom: "6px" }}>{fmt.icon}</div>
-                <strong style={{ fontSize: "13px", color: "#f2f4ff", display: "block" }}>{fmt.name}</strong>
-                <span style={{ fontSize: "10px", color: "#9299b7" }}>{fmt.desc}</span>
+                <div style={{ fontSize: "24px", marginBottom: "6px" }}>
+                  {fmt.icon}
+                </div>
+                <strong
+                  style={{
+                    fontSize: "13px",
+                    color: "#f2f4ff",
+                    display: "block",
+                  }}
+                >
+                  {fmt.name}
+                </strong>
+                <span style={{ fontSize: "10px", color: "#9299b7" }}>
+                  {fmt.desc}
+                </span>
               </div>
             ))}
           </div>
 
-          {/* Native Multi-Selection File Input */}
           <input
             ref={fileInputRef}
             type="file"
@@ -495,9 +760,19 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
             }}
             style={{ display: "none" }}
           />
+          <p className="muted" style={{ textAlign: "center", fontSize: "11px", margin: "8px 0 16px" }}>
+            Files: 20 MiB each; batches: 20 files and 50 MiB total. Scanned pages are visually reviewed only when an AI provider is configured; OCR is not guaranteed.
+          </p>
 
-          {/* Test Sample Pills */}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "8px", marginBottom: "20px" }}>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              justifyContent: "center",
+              gap: "8px",
+              marginBottom: "20px",
+            }}
+          >
             {samples.map((s, idx) => (
               <button
                 key={idx}
@@ -518,7 +793,6 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
             ))}
           </div>
 
-          {/* Direct Copy Text Area */}
           <div
             style={{
               background: "#101329",
@@ -531,8 +805,9 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
           >
             <textarea
               value={pasteText}
+              maxLength={MAX_TEXT_CHARACTERS}
               onChange={(e) => setPasteText(e.target.value)}
-              placeholder="Paste draft copy or upload above..."
+              placeholder="Paste any marketing draft, social caption, cold drink ad, or legal copy here..."
               rows={7}
               style={{
                 width: "100%",
@@ -549,10 +824,29 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
                 fontFamily: "inherit",
               }}
             />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>
-              <span style={{ fontSize: "12px", color: "#9299b7" }}>{pasteText.length} characters</span>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginTop: "16px",
+              }}
+            >
+              <span style={{ fontSize: "12px", color: "#9299b7" }}>
+                {pasteText.length.toLocaleString()} / {MAX_TEXT_CHARACTERS.toLocaleString()} characters
+              </span>
               <button
-                onClick={() => setStep("rules")}
+                onClick={() => {
+                  if (stagedAssets.length > 0) {
+                    onAssetChange?.({
+                      name: stagedAssets[0].name,
+                      fileType: stagedAssets[0].fileType,
+                    });
+                  } else if (pasteText.trim()) {
+                    onAssetChange?.({ name: "Marketing Copy.txt", fileType: "text" });
+                  }
+                  setStep("rules");
+                }}
                 disabled={!pasteText.trim() && stagedAssets.length === 0}
                 style={{
                   background: "#12c4d4",
@@ -572,195 +866,17 @@ export default function Home({ content, setContent, onReview }: HomeProps) {
         </div>
       )}
 
-      {/* STEP 2: RULE CONFIRMATION */}
       {step === "rules" && (
-        <div style={{ maxWidth: "820px", margin: "0 auto" }}>
-          <div style={{ background: "#101329", border: "1px solid #252a48", borderRadius: "18px", padding: "28px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
-              <div>
-                <h2 style={{ fontSize: "20px", fontWeight: 800, margin: "0 0 4px 0", color: "#ffffff" }}>
-                  Active Enforcement Rules
-                </h2>
-                <p style={{ margin: 0, color: "#9299b7", fontSize: "13px" }}>
-                  {stagedAssets.length > 1
-                    ? `Enforcing rules across ${stagedAssets.length} collateral assets in campaign batch.`
-                    : "Toggle brand rules or add product-specific facts."}
-                </p>
-              </div>
-              <button
-                onClick={() => setStep("input")}
-                style={{ background: "transparent", border: "none", color: "#12c4d4", cursor: "pointer", fontSize: "13px" }}
-              >
-                ← Back to Uploads
-              </button>
-            </div>
-
-            {stagedAssets.length > 0 && (
-              <div style={{ marginBottom: "16px" }}>
-                <div style={{ fontSize: "12px", fontWeight: 700, color: "#94a3b8", marginBottom: "8px" }}>
-                  Staged Collateral Batch ({stagedAssets.length}):
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {stagedAssets.map((asset) => (
-                    <div
-                      key={asset.id}
-                      style={{
-                        background: "#080a1c",
-                        border: "1px solid #252a48",
-                        borderRadius: "8px",
-                        padding: "8px 12px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        <span style={{ fontSize: "14px" }}>
-                          {asset.fileType === "image" ? "🖼️" : asset.fileType === "pdf" ? "📄" : "📝"}
-                        </span>
-                        <div>
-                          <strong style={{ fontSize: "12px", color: "#f2f4ff" }}>{asset.name}</strong>
-                          <span style={{ fontSize: "10px", color: "#94a3b8", marginLeft: "8px" }}>
-                            {asset.size} • {asset.category}
-                          </span>
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span style={{ fontSize: "11px", fontWeight: 700, color: asset.priority === "high" ? "#f43f5e" : "#eab308" }}>
-                          {asset.priorityLabel}
-                        </span>
-                        <button
-                          onClick={() => removeStagedAsset(asset.id)}
-                          style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "#64748b",
-                            cursor: "pointer",
-                            fontSize: "12px",
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "24px" }}>
-              {activeRules.map((r) => (
-                <div
-                  key={r.id}
-                  onClick={() =>
-                    setActiveRules((prev) =>
-                      prev.map((item) => (item.id === r.id ? { ...item, enabled: !item.enabled } : item))
-                    )
-                  }
-                  style={{
-                    background: r.enabled ? "#171b35" : "#080a1c",
-                    border: r.enabled ? "1px solid #12c4d450" : "1px dashed #252a48",
-                    borderRadius: "10px",
-                    padding: "12px 16px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    cursor: "pointer",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <input
-                      type="checkbox"
-                      checked={r.enabled}
-                      onChange={() => {}}
-                      style={{ accentColor: "#12c4d4", width: "16px", height: "16px", cursor: "pointer" }}
-                    />
-                    <div>
-                      <span style={{ fontSize: "13px", fontWeight: 600, color: r.enabled ? "#f2f4ff" : "#64748b" }}>
-                        {r.name}
-                      </span>
-                      <span style={{ marginLeft: "8px", fontSize: "10px", color: "#94a3b8" }}>
-                        [{r.scope}]
-                      </span>
-                    </div>
-                  </div>
-                  <span style={{ fontSize: "11px", color: r.enabled ? "#c6f45b" : "#64748b", fontWeight: 700 }}>
-                    {r.enabled ? "ACTIVE" : "EXCLUDED"}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Custom Fact Adder */}
-            <div style={{ background: "#080a1c", border: "1px solid #252a48", borderRadius: "12px", padding: "16px", marginBottom: "24px" }}>
-              <div style={{ fontSize: "12px", fontWeight: 700, color: "#12c4d4", marginBottom: "8px" }}>
-                ➕ Add Custom Fact or Allowed Brand Word:
-              </div>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <input
-                  type="text"
-                  placeholder="e.g. 'Promo price is $49, offer ends Nov 15th'"
-                  value={customRule}
-                  onChange={(e) => setCustomRule(e.target.value)}
-                  style={{
-                    flex: 1,
-                    background: "#101329",
-                    border: "1px solid #252a48",
-                    borderRadius: "8px",
-                    padding: "10px 14px",
-                    color: "#f2f4ff",
-                    fontSize: "13px",
-                    outline: "none",
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    if (!customRule.trim()) return;
-                    setActiveRules((prev) => [
-                      ...prev,
-                      { id: `CR-${Date.now().toString().slice(-4)}`, name: customRule, scope: "Custom", enabled: true },
-                    ]);
-                    setCustomRule("");
-                  }}
-                  style={{
-                    background: "#171b35",
-                    color: "#12c4d4",
-                    border: "1px solid #12c4d450",
-                    borderRadius: "8px",
-                    padding: "0 16px",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  Add Fact
-                </button>
-              </div>
-            </div>
-
-            <button
-              onClick={handleLaunchReview}
-              disabled={loading}
-              style={{
-                width: "100%",
-                background: "#c6f45b",
-                color: "#080a1c",
-                border: "none",
-                borderRadius: "10px",
-                padding: "14px",
-                fontSize: "15px",
-                fontWeight: 800,
-                cursor: loading ? "wait" : "pointer",
-              }}
-            >
-              {loading
-                ? "Launching Audit..."
-                : stagedAssets.length > 1
-                ? `🚀 Launch Priority Audit for ${stagedAssets.length} Assets →`
-                : "🚀 Confirm Rules & Launch Review →"}
-            </button>
-          </div>
-        </div>
+        <ConfigureRules
+          onBack={() => {
+            setStep("input");
+            onShowAssetNotice?.();
+          }}
+          onLaunchReview={(activeRules) => {
+            handleLaunchReviewWithRules(activeRules);
+          }}
+          loadingReview={loading}
+        />
       )}
     </div>
   );

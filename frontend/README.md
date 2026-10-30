@@ -24,7 +24,7 @@ We built **Before It Goes Live** to treat marketing compliance like a visual des
 - **Visual Pin Mapping Instead of Text Lists**: When you upload an ad banner, we place numbered pins (1, 2, 3) directly over the visual elements that have compliance issues.
 - **The Animated Connector Arrow**: Clicking an issue draws a live, animated cyan curve linking the exact spot on your artwork directly to the suggested fix card. You never have to hunt across a screen to understand what needs changing.
 - **Dual Review Modes (Art View vs. Knowledge Graph)**: Designers can stay in the visual Creative Art View to inspect the layout. Compliance reviewers can flip into an interactive Knowledge Graph to see how a claim connects to brand rules and federal evidence.
-- **Clean Fixes Without the Clutter**: Instead of overwhelming you with long legal paragraphs, the main card shows you only what matters: the original phrase and the approved replacement copy. If you want the legal background, one click on "Ask AI Why" brings up Google Gemini to explain the reasoning on demand.
+- **Clean Fixes Without the Clutter**: Instead of overwhelming you with long legal paragraphs, the main card shows you only what matters: the original phrase and the approved replacement copy. If you want the legal background, one click on "Ask AI Why" uses the configured provider to explain the finding on demand.
 - **Built for Whole Campaigns (Batch Queue)**: Hold `Ctrl` or `Shift` and drop in 20 or 50 files at once. The app sorts them into High, Medium, and Low risk so you tackle high-risk claims first, with a clean "Next in Queue" button to move through collateral fast.
 ---
 ## Key Features & Visual Highlights
@@ -36,8 +36,8 @@ An interactive SVG curve moves dynamically as you click different markers. It vi
 Each flagged item gives you an instant, brand-approved replacement that protects your legal standing while keeping the marketing voice strong. You can apply the fix with one click, tweak the wording manually, or dismiss it. 
 ### 4. Interactive Knowledge Graph
 Flip from the creative view into a full node-and-edge visual graph. It lets you see how marketing claims connect to governing rules (like FDA cosmetic guidelines or FTC Green Guides) and supporting lab evidence, giving legal teams complete transparency.
-### 5. On-Demand Gemini AI Explanations
-Rather than filling up your screen with pre-written explanations, the app stays clean and minimal. When you want deeper context, clicking **"Ask AI Why"** calls Google Gemini to break down the exact regulatory guidelines behind the flag.
+### 5. On-Demand AI Explanations
+Rather than filling up your screen with pre-written explanations, the app stays clean and minimal. When you want deeper context, clicking **"Ask AI Why"** uses the configured provider and the evidence attached to the finding.
 ### 6. Dynamic Multi-Page Reader
 Upload a 10-page or 20-page PDF brochure, and the app splits it into clean, clickable page tabs (`P.1`, `P.2`, `P.3`...). You can review findings page-by-page or expand into a Fullscreen Theater Mode for client presentations.
 ### 7. Instant Batch Queue
@@ -48,7 +48,7 @@ Once all markers are cleared, download a clean specification sheet (`.txt`) for 
 
 ## System Architecture & How It Works
 
-The platform consists of a lightweight React frontend and a FastAPI backend with local database persistence and Gemini AI integration.
+The platform consists of a lightweight React frontend and a FastAPI backend with local database persistence and centralized Gemini/Groq AI integration.
 
 ### 1. Ingestion Layer
 - Users can import visual ad banners (PNG, JPG), multi-page brochures (PDF), presentation decks (PPTX), or raw copy drafts.
@@ -71,8 +71,8 @@ The platform consists of a lightweight React frontend and a FastAPI backend with
 - Real-time updates: Applying a fix automatically updates the active document and marks the asset cleared.
 
 ### 5. On-Demand AI Copilot
-- Powered by Google Gemini 1.5 Flash.
-- Explanations are strictly on-demand: clicking "Ask AI Why" queries Gemini to retrieve detailed statutory citations and legal reasoning without cluttering the main review interface.
+- Gemini is the default primary provider and Groq is the fallback; either provider can be used alone when only its key is configured.
+- Explanations are strictly on-demand: clicking "Ask AI Why" uses the configured provider and the finding's supplied evidence.
 
 ### 6. Storage & Audit Ledger
 - SQLite database stores document metadata, active brand rules, and review decisions.
@@ -85,7 +85,7 @@ The platform consists of a lightweight React frontend and a FastAPI backend with
 - Frontend: React 19, TypeScript, Vite, Lucide Icons
 - Backend: Python, FastAPI, Uvicorn, Python-Multipart
 - Database: SQLite (local, zero-configuration)
-- AI Engine: Google Gemini 1.5 Flash API
+- AI Engine: centralized Google Gemini / Groq provider configuration (see the project README for setup)
 - Styling: Custom dark glassmorphic CSS design system
 
 ---
@@ -98,7 +98,8 @@ Before_It_Goes_Live/
 │   ├── before_it_goes_live.db SQLite database file
 │   ├── database.py            Database connection, schemas, and models
 │   ├── engine.py              Regulatory rule matching and claim extractor
-│   ├── main.py                FastAPI REST server and Gemini AI integration
+│   ├── main.py                FastAPI REST server and compliance workflow
+│   ├── ai_provider.py         Central provider configuration and fallback
 │   ├── requirements.txt       Python dependencies
 │   └── test_workflow.py       Backend integration tests
 │

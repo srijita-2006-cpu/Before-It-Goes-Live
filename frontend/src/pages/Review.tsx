@@ -1,12 +1,13 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+
 import {
-  ShieldCheck,
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+  type ChangeEvent,
+} from "react";
+import {
   Sparkles,
-  Check,
-  X,
-  AlertTriangle,
-  ArrowRight,
-  Eye,
   EyeOff,
   Edit3,
   Download,
@@ -14,17 +15,26 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
-  FileText,
   Upload,
   Layers,
-  CheckCircle2,
+  ArrowLeft,
 } from "lucide-react";
-import { applyFixToBackend, askAI, type ChatTurn } from "../api.ts";
+import {
+  applyFixToBackend,
+  askAI,
+  generateCorrectionSuggestion,
+  uploadContent,
+  dismissFinding,
+  dismissMatchingFindings,
+  CorrectionSuggestionError,
+  type ChatTurn,
+  type CorrectionSuggestionStatus,
+} from "../api.ts";
 import GraphView from "../components/GraphView.tsx";
 
 interface Finding {
   id: string;
-  page: number;
+  page?: number;
   markerId: number;
   severity: "high" | "medium" | "low";
   location?: string;
@@ -32,523 +42,789 @@ interface Finding {
   flagged_text: string;
   explanation: string;
   suggested_fix: string;
+  suggestion_draft: string;
+  suggestion_status: CorrectionSuggestionStatus;
+  suggestion_explanation: string;
+  suggestion_change_summary: string;
+  suggestion_missing_information: string[];
   evidence: string;
   status: "open" | "resolved" | "dismissed";
   pinX?: number;
   pinY?: number;
 }
 
+interface BulkAsset {
+  id?: string;
+  name: string;
+  fileType?: string;
+  dataUrl?: string;
+  textContent?: string;
+  originalTextContent?: string;
+  findings?: Finding[];
+  status?: string;
+  risk_level?: string;
+  error_message?: string;
+  cleared?: boolean;
+  [key: string]: any;
+}
+
+const normalizeSeverity = (value: unknown): Finding["severity"] => {
+  const severity = String(value ?? "").toLowerCase();
+
+  if (
+    severity === "high" ||
+    severity === "medium" ||
+    severity === "low"
+  ) {
+    return severity;
+  }
+
+  return "medium";
+};
+
+const normalizeFindingStatus = (
+  value: unknown
+): Finding["status"] => {
+  const status = String(value ?? "open").toLowerCase();
+
+  if (
+    status === "resolved" ||
+    status === "dismissed" ||
+    status === "open"
+  ) {
+    return status;
+  }
+
+  return "open";
+};
+
+const normalizeFinding = (
+  item: any,
+  index: number
+): Finding => {
+  const explanation =
+    typeof item?.explanation === "string" ? item.explanation : "";
+  const allowedSuggestionStatuses: CorrectionSuggestionStatus[] = [
+    "not_requested",
+    "suggestion_ready",
+    "needs_information",
+    "no_safe_replacement",
+    "invalid_suggestion",
+    "error",
+  ];
+  const suggestionStatus = allowedSuggestionStatuses.includes(
+    item?.suggestion_status
+  )
+    ? item.suggestion_status
+    : "not_requested";
+  const storedSuggestion =
+    typeof item?.suggested_fix === "string" ? item.suggested_fix : "";
+  let missingInformation: string[] = [];
+  if (Array.isArray(item?.suggestion_missing_information)) {
+    missingInformation = item.suggestion_missing_information.filter(
+      (value: unknown): value is string => typeof value === "string"
+    );
+  } else if (typeof item?.suggestion_missing_information === "string") {
+    try {
+      const parsed = JSON.parse(item.suggestion_missing_information);
+      if (Array.isArray(parsed)) {
+        missingInformation = parsed.filter(
+          (value: unknown): value is string => typeof value === "string"
+        );
+      }
+    } catch {
+      missingInformation = [];
+    }
+  }
+  const requiredStandard = explanation.match(
+    /Required standard:\s*([\s\S]*)$/i
+  )?.[1]?.trim();
+  const isRuleStatementReplacement =
+    Boolean(requiredStandard) &&
+    storedSuggestion
+      .toLowerCase()
+      .includes(requiredStandard?.toLowerCase() ?? "");
+
+  return {
+    id: String(item?.id || `f-${index + 1}`),
+    page:
+      item?.page != null && Number.isFinite(Number(item.page))
+        ? Number(item.page)
+        : undefined,
+    markerId:
+      Number.isFinite(Number(item?.markerId)) && Number(item?.markerId) > 0
+        ? Number(item.markerId)
+        : index + 1,
+    severity: normalizeSeverity(item?.severity),
+    location:
+      typeof item?.location === "string" ? item.location : undefined,
+    image_action:
+      typeof item?.image_action === "string"
+        ? item.image_action
+        : undefined,
+    flagged_text:
+      typeof item?.flagged_text === "string"
+        ? item.flagged_text
+        : typeof item?.original === "string"
+          ? item.original
+          : "",
+    explanation,
+    suggested_fix:
+      suggestionStatus === "suggestion_ready" && !isRuleStatementReplacement
+        ? storedSuggestion
+        : "",
+    suggestion_draft:
+      typeof item?.suggestion_draft === "string" ? item.suggestion_draft : "",
+    suggestion_status: suggestionStatus,
+    suggestion_explanation:
+      typeof item?.suggestion_explanation === "string"
+        ? item.suggestion_explanation
+        : "",
+    suggestion_change_summary:
+      typeof item?.suggestion_change_summary === "string"
+        ? item.suggestion_change_summary
+        : "",
+    suggestion_missing_information: missingInformation,
+    evidence:
+      typeof item?.evidence === "string" ? item.evidence : "",
+    status: normalizeFindingStatus(item?.status),
+    pinX:
+      item?.pinX != null &&
+      item.pinX !== "" &&
+      Number.isFinite(Number(item.pinX))
+        ? Number(item.pinX)
+        : undefined,
+    pinY:
+      item?.pinY != null &&
+      item.pinY !== "" &&
+      Number.isFinite(Number(item.pinY))
+        ? Number(item.pinY)
+        : undefined,
+  };
+};
+
+const readSession = (key: string): string | null => {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const writeSession = (key: string, value: string) => {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // The review remains usable if browser storage is unavailable.
+  }
+};
+
+const removeSession = (key: string) => {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // Ignore unavailable browser storage.
+  }
+};
+
 interface ReviewProps {
   content?: string;
   setContent?: (val: string) => void;
   reviewStarted?: boolean;
   onReview?: () => void;
+  onBackToHome?: () => void;
+  onCorrectionApproved?: () => void;
 }
 
-// Visual Creative Findings for Ad Banners / Image Creatives
-const VISUAL_CREATIVE_FINDINGS: Finding[] = [
-  {
-    id: "img-m1",
-    page: 1,
-    markerId: 1,
-    severity: "high",
-    location: "Benefit Badge #1 (Left Column under Leaf Icon)",
-    image_action: "Replace Badge #1 headline & subtitle text",
-    flagged_text: "100% Natural Ingredients (No harsh chemicals, just pure goodness.)",
-    explanation:
-      "FTC Green Guides (16 CFR §260.15) & USDA standards prohibit absolute '100% natural' and 'no harsh chemicals' claims without audited third-party laboratory verification for every raw botanical extract and processing aid. 'No harsh chemicals' creates an unlawful implied safety warranty.",
-    suggested_fix:
-      "95% Certified Natural-Origin Botanical Ingredients (Formulated without synthetic sulfates, parabens, or artificial dyes)",
-    evidence: "FTC Green Guides 16 CFR §260 & USDA BioPreferred",
-    status: "open",
-    pinX: 21,
-    pinY: 47,
-  },
-  {
-    id: "img-m2",
-    page: 1,
-    markerId: 2,
-    severity: "medium",
-    location: "Trust Badge #2 (Center Column under Droplet Icon)",
-    image_action: "Update Badge #2 subtitle under droplet icon",
-    flagged_text: "Dermatologist Recommended (Safe for all skin types, even sensitive skin.)",
-    explanation:
-      "FTC Endorsement Guides (16 CFR §255) and FDA Cosmetic regulations require an active, statistically representative dermatologist panel survey to claim 'Dermatologist Recommended'. Promising 'Safe for all skin types' creates strict liability without HRIPT sensitive-skin clinical trial records.",
-    suggested_fix:
-      "Dermatologist-Tested (Suitable for most skin types, including sensitive skin — patch test recommended)",
-    evidence: "FTC §255 Endorsement Guides & FDA 21 CFR §701.3",
-    status: "open",
-    pinX: 47,
-    pinY: 47,
-  },
-  {
-    id: "img-m3",
-    page: 1,
-    markerId: 3,
-    severity: "low",
-    location: "Hero Headline & Subtitle Banner",
-    image_action: "Update primary headline and subtitle copy in upper banner",
-    flagged_text: "Healthy Skin Starts Here (Pure, natural skincare for a clearer, brighter, more confident you.)",
-    explanation:
-      "FDA Cosmetic vs. Drug Boundary (FD&C Act §201(i)): Promising 'Healthy Skin Starts Here' combined with 'clearer skin' risks classification as an unapproved drug claim targeting physiological skin conditions (acne) unless qualified to clarify that benefits describe temporary visual appearance enhancement.",
-    suggested_fix:
-      "Radiant-Looking Skin Starts Here (Gentle botanical daily care for a visibly clearer, brighter-looking complexion)",
-    evidence: "FDA FD&C Act §201(i) Cosmetic Labeling Mandate",
-    status: "open",
-    pinX: 25,
-    pinY: 14,
-  },
-];
-
-// Universal Regulatory Violation Rule Patterns
-const REGULATORY_PATTERNS = [
-  {
-    regex: /\b(?:clinically proven|clinically tested|reverse(?:s|d)?\s+(?:signs\s+of\s+)?aging|cures?|eliminates?\s+(?:all|wrinkles|acne|pain)|instant(?:ly)?\s+(?:results?|reversal|relief)|100%\s+(?:effective|guaranteed|results)|miracle\s+cure)\b[^\n,.]*/i,
-    severity: "high" as const,
-    fixTransformer: (m: string) => `tested to support visual appearance improvements over 4 weeks`,
-    explanation: "Absolute efficacy or medical reversal claims violate FDA Cosmetic vs Drug 21 CFR §701.3 and FTC §5 advertising mandates.",
-    evidence: "FDA Cosmetic 21 CFR §701.3 • FTC Act §5(a) Substantiation",
-  },
-  {
-    regex: /\b(?:100%\s+(?:natural|organic|pure|chemical-free|green|eco-friendly)|zero\s+(?:chemicals|toxins|carbon)|completely\s+(?:natural|sustainable))\b[^\n,.]*/i,
-    severity: "high" as const,
-    fixTransformer: (m: string) => `formulated with certified botanical-origin ingredients`,
-    explanation: "Unqualified 100% natural, pure, or chemical-free claims trigger strict FTC Green Guides (16 CFR §260) false advertising liability.",
-    evidence: "FTC Green Guides 16 CFR §260.15",
-  },
-  {
-    regex: /\b(?:dermatologist\s+recommended|doctor\s+approved|voted\s+#1|safe\s+for\s+all\s+skin\s+types|trusted\s+by\s+millions)\b[^\n,.]*/i,
-    severity: "medium" as const,
-    fixTransformer: (m: string) => `dermatologist-tested across diverse sensitive skin cohorts`,
-    explanation: "Survey, recommendation, or endorsement assertions require verified statistical panel survey documentation on file.",
-    evidence: "FTC Endorsement Guides 16 CFR §255",
-  },
-  {
-    regex: /\b(?:only\s+\$\d+|lowest\s+price\s+ever|flash\s+(?:sale|launch\s+price)|destroy\s+all\s+wrinkles|buy\s+now\s+or\s+you'll\s+regret)\b[^\n,.]*/i,
-    severity: "low" as const,
-    fixTransformer: (m: string) => `${m} (Limited promotional launch offer; terms apply)`,
-    explanation: "Promotional pricing claims require explicit expiration date disclosures and baseline retail pricing transparency.",
-    evidence: "FTC Pricing Guides 16 CFR §233",
-  },
-  {
-    regex: /\b(?:revolutionary|unmatched|superior\s+to|industry-leading|the\s+most\s+powerful|unlike\s+any\s+other)\b[^\n,.]*/i,
-    severity: "medium" as const,
-    fixTransformer: (m: string) => `carefully formulated premium solution`,
-    explanation: "Unsubstantiated comparative superlatives require head-to-head empirical testing data against market competitors.",
-    evidence: "NAD Case Precedents • FTC Advertising Deception Policy",
-  },
-];
-
-// Extract findings dynamically from the actual text of ANY page
-function extractPageFindings(pageText: string, pageNum: number): Finding[] {
-  if (!pageText || pageText.trim().length === 0) return [];
-  const results: Finding[] = [];
-
-  for (const rule of REGULATORY_PATTERNS) {
-    const match = pageText.match(rule.regex);
-    if (match && match[0] && pageText.includes(match[0])) {
-      const phrase = match[0].trim();
-      if (!results.some((r) => r.flagged_text === phrase)) {
-        const markerNum = results.length + 1;
-        results.push({
-          id: `p${pageNum}-m${markerNum}`,
-          page: pageNum,
-          markerId: markerNum,
-          severity: rule.severity,
-          location: `Page ${pageNum} • Paragraph Marker #${markerNum}`,
-          image_action: "Update text passage",
-          flagged_text: phrase,
-          explanation: rule.explanation,
-          suggested_fix: rule.fixTransformer(phrase),
-          evidence: rule.evidence,
-          status: "open",
-        });
-      }
-    }
-    if (results.length >= 3) break;
-  }
-
-  if (results.length < 3) {
-    const lines = pageText
-      .split(/[\r\n]+/)
-      .map((l) => l.trim())
-      .filter((l) => l.length >= 8 && !l.startsWith("---") && !l.match(/^page\s*\d+/i) && !l.match(/^\d+$/));
-
-    const candidatePhrases: string[] = [];
-    for (const line of lines) {
-      const clauses = line
-        .split(/[.,;:—–•]+/)
-        .map((c) => c.trim())
-        .filter((c) => c.length >= 12 && c.length <= 65);
-
-      if (clauses.length > 0) {
-        candidatePhrases.push(...clauses);
-      } else if (line.length <= 65) {
-        candidatePhrases.push(line);
-      }
-    }
-
-    const templates = [
-      {
-        severity: "high" as const,
-        fixGen: (t: string) => `formulated to visibly support ${t.toLowerCase().replace(/^(our|the|a|an)\s+/i, "")}`,
-        explanation: "Absolute or prominent efficacy statement requires empirical clinical trial substantiation under FTC §5.",
-        evidence: "FTC Act §5(a) Substantiation • FDA 21 CFR §701.3",
-      },
-      {
-        severity: "medium" as const,
-        fixGen: (t: string) => `dermatologist-tested ${t.toLowerCase().replace(/^(our|the|a|an)\s+/i, "")}`,
-        explanation: "Ingredient assertion or efficacy specification requires batch Certificate of Analysis (COA) audit verification.",
-        evidence: "Brand Formulation Standards §2.1 • CIR Guidelines",
-      },
-      {
-        severity: "low" as const,
-        fixGen: (t: string) => `${t}* (*Individual results may vary)`,
-        explanation: "General marketing assertion requires qualifying disclosure for consumer clarity and transparency.",
-        evidence: "FTC Consumer Disclosure & Endorsement Guides §255",
-      },
-    ];
-
-    for (const phrase of candidatePhrases) {
-      if (results.length >= 3) break;
-      if (
-        pageText.includes(phrase) &&
-        !results.some((r) => r.flagged_text.includes(phrase) || phrase.includes(r.flagged_text))
-      ) {
-        const markerNum = results.length + 1;
-        const tmpl = templates[results.length] || templates[0];
-        results.push({
-          id: `p${pageNum}-m${markerNum}`,
-          page: pageNum,
-          markerId: markerNum,
-          severity: tmpl.severity,
-          location: `Page ${pageNum} • Paragraph Marker #${markerNum}`,
-          image_action: "Update text passage",
-          flagged_text: phrase,
-          explanation: tmpl.explanation,
-          suggested_fix: tmpl.fixGen(phrase),
-          evidence: tmpl.evidence,
-          status: "open",
-        });
-      }
-    }
-  }
-
-  return results;
-}
-
-// Generate findings dynamically across ALL pages in the document
-function generateDocumentFindings(docText: string, docPages: string[]): Finding[] {
-  const saved = sessionStorage.getItem("current_findings");
-  let validSaved: Finding[] = [];
-
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        validSaved = parsed.filter(
-          (item: any) =>
-            item.flagged_text &&
-            docText.includes(item.flagged_text) &&
-            !item.flagged_text.includes("[Image file uploaded") &&
-            !item.flagged_text.includes("Visual marketing claims scanned")
-        );
-      }
-    } catch {}
-  }
-
-  const allFindings: Finding[] = [];
-
-  docPages.forEach((pText, idx) => {
-    const pageNum = idx + 1;
-    const pageSaved = validSaved.filter((f) => f.page === pageNum && pText.includes(f.flagged_text));
-
-    if (pageSaved.length >= 3) {
-      allFindings.push(
-        ...pageSaved.slice(0, 3).map((f, mIdx) => ({
-          ...f,
-          page: pageNum,
-          markerId: mIdx + 1,
-        }))
-      );
-    } else {
-      const combined = [...pageSaved];
-      const fresh = extractPageFindings(pText, pageNum);
-
-      for (const fr of fresh) {
-        if (combined.length >= 3) break;
-        if (!combined.some((c) => c.flagged_text === fr.flagged_text)) {
-          combined.push(fr);
-        }
-      }
-
-      allFindings.push(
-        ...combined.slice(0, 3).map((f, mIdx) => ({
-          ...f,
-          page: pageNum,
-          markerId: mIdx + 1,
-        }))
-      );
-    }
-  });
-
-  return allFindings;
-}
-
-export default function Review({ content, setContent }: ReviewProps) {
-  const [viewMode, setViewMode] = useState<"creative" | "graph">("creative");
-  const [activeMarkerId, setActiveMarkerId] = useState<number>(1);
-  const [currentPage, setCurrentPage] = useState<number>(1);
+export default function Review({
+  content,
+  setContent,
+  onBackToHome,
+  onCorrectionApproved,
+}: ReviewProps) {
+  const [viewMode, setViewMode] = useState<"creative" | "graph">(
+    "creative"
+  );
+  const [activeMarkerId, setActiveMarkerId] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [previewTab, setPreviewTab] = useState<"image" | "specs">("image");
 
-  // Bulk Queue Initialization (with fallback sample queue for testing bulk switching)
-  const [bulkQueue, setBulkQueue] = useState<any[]>(() => {
-    if ((window as any).__B4LIVE_QUEUE__ && Array.isArray((window as any).__B4LIVE_QUEUE__) && (window as any).__B4LIVE_QUEUE__.length > 0) {
-      return (window as any).__B4LIVE_QUEUE__;
+  const [auditStatus, setAuditStatus] = useState(
+    () => readSession("current_audit_status") || "Awaiting audit"
+  );
+  const [riskLevel, setRiskLevel] = useState(
+    () => readSession("current_risk_level") || "Not assessed"
+  );
+  const [errorMessage, setErrorMessage] = useState<string | null>(
+    () => readSession("current_error_message")
+  );
+
+  const [bulkQueue, setBulkQueue] = useState<BulkAsset[]>(() => {
+    const globalQueue = (window as any).__B4LIVE_QUEUE__;
+
+    if (Array.isArray(globalQueue) && globalQueue.length > 0) {
+      return globalQueue;
     }
+
     try {
-      const saved = sessionStorage.getItem("bulk_queue");
+      const saved = readSession("bulk_queue");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
-    } catch {}
-
-    // If in bulk mode, provide ready queue
-    if (sessionStorage.getItem("is_bulk_import") === "true") {
-      return [
-        { id: "q-1", name: "Campaign_Hero_Ad.png", fileType: "image", priority: "high", priorityLabel: "🚨 High Risk", category: "Visual Creative", cleared: false },
-        { id: "q-2", name: "Clinical_Efficacy_Brochure.pdf", fileType: "pdf", priority: "medium", priorityLabel: "⚠️ Medium Risk", category: "Brochure", cleared: false },
-        { id: "q-3", name: "Commercial_Distribution_Specs.pdf", fileType: "pdf", priority: "medium", priorityLabel: "⚠️ Medium Risk", category: "Dossier", cleared: false },
-      ];
+    } catch {
+      // Ignore malformed saved queue data.
     }
+
     return [];
   });
 
-  // Current File Metadata
-  const [docFilename, setDocFilename] = useState<string>(() => {
-    return sessionStorage.getItem("current_filename") || bulkQueue[0]?.name || "Uploaded Content";
-  });
-  const docTitle = docFilename.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-  const [activeAssetId, setActiveAssetId] = useState<string | null>(
-    () => (bulkQueue.find((a) => a.name === docFilename) ?? bulkQueue[0])?.id ?? null
+  const [docFilename, setDocFilename] = useState(
+    () =>
+      readSession("current_filename") ||
+      bulkQueue[0]?.name ||
+      "Marketing Asset"
   );
-  const isCurrent = (a: any) => (activeAssetId ? a.id === activeAssetId : a.name === docFilename);
 
-  const [activeFileType, setActiveFileType] = useState<string>(() => {
-    return sessionStorage.getItem("current_file_type") || bulkQueue[0]?.fileType || "text";
-  });
+  const docTitle = docFilename
+    .replace(/\.[^/.]+$/, "")
+    .replace(/[-_]/g, " ");
 
-  const [imageUrl, setImageUrl] = useState<string | null>(() => {
-    const fileType = sessionStorage.getItem("current_file_type");
-    if (fileType === "pdf" || fileType === "text" || docFilename.match(/\.(pdf|pptx|txt|docx)$/i)) {
-      return null;
-    }
-    return sessionStorage.getItem("current_image_url") || null;
-  });
+  const [activeAssetId, setActiveAssetId] = useState<string | null>(
+    () =>
+      (
+        bulkQueue.find(
+          (asset) => asset.name === docFilename
+        ) ?? bulkQueue[0]
+      )?.id ?? null
+  );
 
-  // Strict Image Mode check
+  const isCurrent = (asset: BulkAsset) =>
+    activeAssetId
+      ? asset.id === activeAssetId
+      : asset.name === docFilename;
+
+  const [activeFileType, setActiveFileType] = useState(
+    () =>
+      readSession("current_file_type") ||
+      bulkQueue[0]?.fileType ||
+      "text"
+  );
+
+  const [imageUrl, setImageUrl] = useState<string | null>(
+    () => readSession("current_image_url")
+  );
+
   const isImageMode =
     activeFileType === "image" ||
-    Boolean(docFilename.match(/\.(png|jpg|jpeg|webp)$/i) && imageUrl);
+    Boolean(
+      docFilename.match(/\.(png|jpg|jpeg|webp|gif)$/i) &&
+        imageUrl
+    );
 
   const imageFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Document Text directly from session or props
-  const [documentText, setDocumentText] = useState<string>(() => {
-    const saved = sessionStorage.getItem("current_doc_text");
-    if (saved && saved.trim().length > 0) return saved;
-    if (content && content.trim().length > 0) return content;
-    return `${docTitle} • Uploaded Document\nEvaluating compliance across active brand guidelines.`;
+  const [documentText, setDocumentText] = useState(() => {
+    const saved = readSession("current_doc_text");
+
+    if (saved !== null && saved.trim().length > 0) {
+      return saved;
+    }
+
+    if (content && content.trim().length > 0) {
+      return content;
+    }
+
+    return saved ?? "";
   });
 
-  // Dynamically split pages based on actual delimiters in the uploaded text
+  const [originalDocumentText, setOriginalDocumentText] = useState(() => {
+    const original = readSession("current_original_doc_text");
+    if (original !== null) return original;
+    return readSession("current_doc_text") ?? content ?? "";
+  });
+
   const pages = useMemo(() => {
     if (!documentText) return [""];
-    const pageRegex = /---\s*\[(?:Page|Slide)\s*(\d+)\]\s*---/gi;
+
+    const pageRegex =
+      /---\s*\[(?:Page|Slide)\s*(\d+)\]\s*---/gi;
+
     if (pageRegex.test(documentText)) {
-      const parts = documentText.split(/---\s*\[(?:Page|Slide)\s*\d+\]\s*---/gi);
-      const cleanParts = parts.map((p) => p.trim()).filter(Boolean);
-      return cleanParts.length > 0 ? cleanParts : [documentText];
+      const parts = documentText
+        .split(/---\s*\[(?:Page|Slide)\s*\d+\]\s*---/gi)
+        .map((part) => part.trim())
+        .filter(Boolean);
+
+      return parts.length > 0 ? parts : [documentText];
     }
-    if (documentText.includes("\f")) {
-      const parts = documentText.split("\f").map((p) => p.trim()).filter(Boolean);
-      if (parts.length > 1) return parts;
-    }
+
     return [documentText];
   }, [documentText]);
 
+  const originalPages = useMemo(() => {
+    if (!originalDocumentText) return [""];
+
+    const pageRegex =
+      /---\s*\[(?:Page|Slide)\s*(\d+)\]\s*---/gi;
+
+    if (pageRegex.test(originalDocumentText)) {
+      const parts = originalDocumentText
+        .split(/---\s*\[(?:Page|Slide)\s*\d+\]\s*---/gi)
+        .map((part) => part.trim())
+        .filter(Boolean);
+
+      return parts.length > 0 ? parts : [originalDocumentText];
+    }
+
+    return [originalDocumentText];
+  }, [originalDocumentText]);
+
   const totalPages = isImageMode ? 1 : pages.length;
-  const activePageText = pages[currentPage - 1] || pages[0] || "";
+  const activePageText =
+    pages[currentPage - 1] || pages[0] || "";
+  const originalPageText =
+    originalPages[currentPage - 1] || originalPages[0] || "";
 
-  // Dynamic Findings
   const [findings, setFindings] = useState<Finding[]>(() => {
-    if (isImageMode) return VISUAL_CREATIVE_FINDINGS;
-    return generateDocumentFindings(documentText, pages);
-  });
+    try {
+      const saved = readSession("current_findings");
 
-  // Sync Queue from Window/Session on mount
-  useEffect(() => {
-    if ((window as any).__B4LIVE_QUEUE__ && (window as any).__B4LIVE_QUEUE__.length > 0) {
-      setBulkQueue((window as any).__B4LIVE_QUEUE__);
-    } else {
-      try {
-        const savedQueue = sessionStorage.getItem("bulk_queue");
-        if (savedQueue) {
-          const parsed = JSON.parse(savedQueue);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setBulkQueue(parsed);
-          }
+      if (saved) {
+        const parsed = JSON.parse(saved);
+
+        if (Array.isArray(parsed)) {
+          return parsed.map(normalizeFinding);
         }
-      } catch {}
-    }
-  }, []);
-
-  // A new batch launched from Home while this page is still mounted
-  useEffect(() => {
-    const onNewBatch = () => {
-      const q = (window as any).__B4LIVE_QUEUE__;
-      if (Array.isArray(q) && q.length > 0) {
-        setBulkQueue(q);
-        handleSwitchBulkAsset(q[0]);
       }
-    };
-    window.addEventListener("b4live-queue", onNewBatch);
-    return () => window.removeEventListener("b4live-queue", onNewBatch);
-  }, []);
-
-  // Keep the ongoing card visible in the queue strip
-  useEffect(() => {
-    if (activeAssetId) {
-      document.getElementById(`queue-card-${activeAssetId}`)?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    } catch {
+      // Invalid saved findings must not crash the review.
     }
-  }, [activeAssetId]);
 
-  // Ensure image cleanup when in document mode
-  useEffect(() => {
-    if (docFilename.match(/\.(pdf|pptx|txt|docx)$/i) || activeFileType !== "image") {
-      if (imageUrl) {
-        setImageUrl(null);
-        sessionStorage.removeItem("current_image_url");
-      }
-    }
-  }, [docFilename, activeFileType]);
-
-  // Re-sync findings whenever mode, text, or pages change
-  useEffect(() => {
-    if (isImageMode) {
-      setFindings(VISUAL_CREATIVE_FINDINGS);
-      sessionStorage.setItem("current_findings", JSON.stringify(VISUAL_CREATIVE_FINDINGS));
-    } else {
-      const refreshed = generateDocumentFindings(documentText, pages);
-      setFindings(refreshed);
-      sessionStorage.setItem("current_findings", JSON.stringify(refreshed));
-    }
-  }, [isImageMode, documentText, pages]);
+    return [];
+  });
 
   const [isEditingManually, setIsEditingManually] = useState(false);
   const [manualText, setManualText] = useState("");
-  const [aiChats, setAiChats] = useState<{ [id: string]: ChatTurn[] }>({}); // conversation per finding
-  const [aiInputs, setAiInputs] = useState<{ [id: string]: string }>({});
-  const [aiLoading, setAiLoading] = useState<{ [id: string]: boolean }>({});
+  const [aiChats, setAiChats] = useState<{
+    [id: string]: ChatTurn[];
+  }>({});
+  const [aiInputs, setAiInputs] = useState<{
+    [id: string]: string;
+  }>({});
+  const [aiLoading, setAiLoading] = useState<{
+    [id: string]: boolean;
+  }>({});
+  const [fixSaving, setFixSaving] = useState<{
+    [id: string]: boolean;
+  }>({});
+  const [suggestionLoading, setSuggestionLoading] = useState<{
+    [id: string]: boolean;
+  }>({});
+  const [suggestionFailures, setSuggestionFailures] = useState<{
+    [id: string]: { status: "invalid_suggestion" | "error"; message: string };
+  }>({});
+  const [correctionNotice, setCorrectionNotice] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const markerRefs = useRef<{ [key: number]: HTMLElement | null }>({});
+  const suggestionRequestsRef = useRef(new Set<string>());
+  const markerRefs = useRef<{
+    [key: number]: HTMLElement | null;
+  }>({});
   const fixPanelRef = useRef<HTMLDivElement | null>(null);
-  const [arrowPath, setArrowPath] = useState<string>("");
+  const [arrowPath, setArrowPath] = useState("");
 
   const pageFindings = useMemo(() => {
     if (isImageMode) return findings;
-    return findings.filter((f) => f.page === currentPage);
+
+    return findings.filter((finding) =>
+      finding.page != null
+        ? finding.page === currentPage
+        : currentPage === 1
+    );
   }, [findings, currentPage, isImageMode]);
 
-  const openPageFindings = pageFindings.filter((f) => f.status === "open");
+  const openPageFindings = pageFindings.filter(
+    (finding) => finding.status === "open"
+  );
+
   const activeFinding =
-    pageFindings.find((f) => f.markerId === activeMarkerId) ||
+    pageFindings.find(
+      (finding) => finding.markerId === activeMarkerId
+    ) ||
     openPageFindings[0] ||
     pageFindings[0];
 
-  // Switch between bulk assets in priority queue
-  const handleSwitchBulkAsset = (asset: any) => {
-    setActiveAssetId(asset.id ?? null);
-    setDocFilename(asset.name);
-    setActiveFileType(asset.fileType);
-    sessionStorage.setItem("current_filename", asset.name);
-    sessionStorage.setItem("current_file_type", asset.fileType);
+  const allPageResolved =
+    pageFindings.length > 0 &&
+    pageFindings.every(
+      (finding) =>
+        finding.status === "resolved" ||
+        finding.status === "dismissed"
+    );
 
-    if (asset.fileType === "image") {
-      const img = asset.dataUrl || sessionStorage.getItem("current_image_url");
-      setImageUrl(img);
-      if (img) sessionStorage.setItem("current_image_url", img);
-      setFindings(VISUAL_CREATIVE_FINDINGS);
-      sessionStorage.setItem("current_findings", JSON.stringify(VISUAL_CREATIVE_FINDINGS));
-    } else {
-      setImageUrl(null);
-      sessionStorage.removeItem("current_image_url");
-
-      const text =
-        asset.textContent ||
-        `--- [Page 1] ---\n${asset.name} • Executive Overview\nClaims evaluation and regulatory verification in progress.\n\n--- [Page 2] ---\nClinical Study Results\nConsumer tested formulation across diverse skin phototypes.`;
-      setDocumentText(text);
-      if (setContent) setContent(text);
-      sessionStorage.setItem("current_doc_text", text);
-
-      const pageRegex = /---\s*\[(?:Page|Slide)\s*(\d+)\]\s*---/gi;
-      const parts = pageRegex.test(text)
-        ? text.split(/---\s*\[(?:Page|Slide)\s*\d+\]\s*---/gi).map((p: string) => p.trim()).filter(Boolean)
-        : [text];
-
-      sessionStorage.removeItem("current_findings");
-      const fresh = generateDocumentFindings(text, parts);
-      setFindings(fresh);
-      sessionStorage.setItem("current_findings", JSON.stringify(fresh));
-    }
-    setActiveMarkerId(1);
-    setCurrentPage(1);
+  const persistFindings = (nextFindings: Finding[]) => {
+    setFindings(nextFindings);
+    writeSession("current_findings", JSON.stringify(nextFindings));
   };
 
-  // Image Upload / Change
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const persistActiveBulkAsset = (
+    updatedText: string,
+    updatedFindings: Finding[]
+  ) => {
+    if (!activeAssetId) return;
+
+    setBulkQueue((previous) => {
+      const updatedQueue = previous.map((asset) =>
+        isCurrent(asset)
+          ? {
+              ...asset,
+              originalTextContent:
+                asset.originalTextContent ??
+                asset.textContent ??
+                originalDocumentText,
+              textContent: updatedText,
+              findings: updatedFindings,
+            }
+          : asset
+      );
+      writeSession("bulk_queue", JSON.stringify(updatedQueue));
+      (window as any).__B4LIVE_QUEUE__ = updatedQueue;
+      return updatedQueue;
+    });
+  };
+
+  const setReviewError = (message: string | null) => {
+    setErrorMessage(message);
+
+    if (message) {
+      writeSession("current_error_message", message);
+    } else {
+      removeSession("current_error_message");
+    }
+  };
+
+  const handleApplyAiSuggestion = async (findingId: string) => {
+    const target = findings.find((finding) => finding.id === findingId);
+    if (
+      !target ||
+      target.status !== "open" ||
+      suggestionLoading[findingId] ||
+      suggestionRequestsRef.current.has(findingId) ||
+      fixSaving[findingId]
+    ) {
+      return;
+    }
+
+    // Reuse an already validated suggestion instead of spending another AI call.
+    if (
+      target.suggestion_status === "suggestion_ready" &&
+      target.suggested_fix.trim()
+    ) {
+      setManualText(target.suggested_fix);
+      setIsEditingManually(true);
+      setReviewError(null);
+      return;
+    }
+
+    suggestionRequestsRef.current.add(findingId);
+    setSuggestionLoading((previous) => ({
+      ...previous,
+      [findingId]: true,
+    }));
+    setSuggestionFailures((previous) => {
+      const next = { ...previous };
+      delete next[findingId];
+      return next;
+    });
+
+    try {
+      const suggestion = await generateCorrectionSuggestion(findingId);
+      const nextFindings = findings.map((finding) =>
+        finding.id === findingId
+          ? {
+              ...finding,
+              suggested_fix:
+                suggestion.status === "suggestion_ready"
+                  ? suggestion.replacement_text
+                  : "",
+              suggestion_draft:
+                suggestion.status === "suggestion_ready"
+                  ? ""
+                  : suggestion.draft_replacement_text?.trim() || "",
+              suggestion_status: suggestion.status,
+              suggestion_explanation: suggestion.explanation,
+              suggestion_change_summary: suggestion.change_summary,
+              suggestion_missing_information: suggestion.missing_information,
+            }
+          : finding
+      );
+      persistFindings(nextFindings);
+      onCorrectionApproved?.();
+      if (!isImageMode) {
+        persistActiveBulkAsset(documentText, nextFindings);
+      }
+
+      if (
+        suggestion.status !== "suggestion_ready" ||
+        !suggestion.replacement_text.trim()
+      ) {
+        setCorrectionNotice(null);
+        setManualText(suggestion.draft_replacement_text?.trim() || "");
+        setIsEditingManually(true);
+        setReviewError(null);
+        return;
+      }
+
+      // Put the generated wording in the editable preview. The user reviews or
+      // edits it, then presses Confirm to update the advertisement.
+      setManualText(suggestion.replacement_text);
+      setIsEditingManually(true);
+      setReviewError(null);
+    } catch (error) {
+      setSuggestionFailures((previous) => ({
+        ...previous,
+        [findingId]: {
+          status:
+            error instanceof CorrectionSuggestionError
+              ? error.suggestionStatus
+              : "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "The suggestion could not be generated. No replacement was saved; retry the request.",
+        },
+      }));
+    } finally {
+      suggestionRequestsRef.current.delete(findingId);
+      setSuggestionLoading((previous) => ({
+        ...previous,
+        [findingId]: false,
+      }));
+    }
+  };
+
+  const handleSwitchBulkAsset = (asset: BulkAsset) => {
+    setActiveAssetId(asset.id ?? null);
+    setDocFilename(asset.name);
+    setActiveFileType(asset.fileType || "text");
+
+    writeSession("current_filename", asset.name);
+    writeSession("current_file_type", asset.fileType || "text");
+
+    if (asset.fileType === "image") {
+      const img = asset.dataUrl || null;
+      setImageUrl(img);
+
+      if (img) {
+        writeSession("current_image_url", img);
+      } else {
+        removeSession("current_image_url");
+      }
+    } else {
+      setImageUrl(null);
+      removeSession("current_image_url");
+    }
+
+    const nextText =
+      typeof asset.textContent === "string"
+        ? asset.textContent
+        : "";
+    const nextOriginalText =
+      typeof asset.originalTextContent === "string"
+        ? asset.originalTextContent
+        : nextText;
+
+    setDocumentText(nextText);
+    setOriginalDocumentText(nextOriginalText);
+    setContent?.(nextText);
+    writeSession("current_doc_text", nextText);
+    writeSession("current_original_doc_text", nextOriginalText);
+
+    const nextFindings = Array.isArray(asset.findings)
+      ? asset.findings.map(normalizeFinding)
+      : [];
+
+    persistFindings(nextFindings);
+
+    const nextStatus = asset.status || "Awaiting audit";
+    const nextRisk = asset.risk_level || "Not assessed";
+
+    setAuditStatus(nextStatus);
+    setRiskLevel(nextRisk);
+
+    writeSession("current_audit_status", nextStatus);
+    writeSession("current_risk_level", nextRisk);
+
+    setReviewError(asset.error_message || null);
+
+    setActiveMarkerId(1);
+    setCurrentPage(1);
+    setIsEditingManually(false);
+    setManualText("");
+    setAiChats({});
+    setAiInputs({});
+    setAiLoading({});
+    setFixSaving({});
+  };
+
+  const handleImageChange = (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
     if (!file) return;
+
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
+
+    reader.onload = async (loadEvent) => {
+      const dataUrl = loadEvent.target?.result;
+
+      if (typeof dataUrl !== "string") {
+        setReviewError("The selected image could not be read.");
+        setAuditStatus("Failed");
+        writeSession("current_audit_status", "Failed");
+        event.target.value = "";
+        return;
+      }
+
       setImageUrl(dataUrl);
       setDocFilename(file.name);
+      setActiveAssetId(null);
       setActiveFileType("image");
-      sessionStorage.setItem("current_image_url", dataUrl);
-      sessionStorage.setItem("current_file_type", "image");
-      sessionStorage.setItem("current_filename", file.name);
+      setDocumentText("");
+      setOriginalDocumentText("");
+      persistFindings([]);
+      setAuditStatus("Analysis in progress");
+      setRiskLevel("Not assessed");
+      setReviewError(null);
+
+      writeSession("current_doc_text", "");
+      writeSession("current_original_doc_text", "");
+      writeSession("current_audit_status", "Analysis in progress");
+      writeSession("current_risk_level", "Not assessed");
+      writeSession("current_image_url", dataUrl);
+      writeSession("current_file_type", "image");
+      writeSession("current_filename", file.name);
+      removeSession("current_error_message");
+
       setActiveMarkerId(1);
+      setCurrentPage(1);
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("title", file.name);
+
+        const response = await uploadContent(formData);
+
+        if (response?.document_id) {
+          writeSession("currentDocId", response.document_id);
+        }
+
+        if (response?.headline) {
+          writeSession("current_headline", response.headline);
+        }
+
+        if (typeof response?.text_content === "string") {
+          setDocumentText(response.text_content);
+          setOriginalDocumentText(response.text_content);
+          writeSession("current_doc_text", response.text_content);
+          writeSession("current_original_doc_text", response.text_content);
+        }
+
+        const nextFindings = Array.isArray(response?.findings)
+          ? response.findings.map(normalizeFinding)
+          : [];
+
+        persistFindings(nextFindings);
+
+        const nextRisk =
+          response?.risk_level || "Not assessed";
+        const nextStatus =
+          response?.status || "Incomplete analysis";
+
+        setRiskLevel(nextRisk);
+        setAuditStatus(nextStatus);
+
+        writeSession("current_risk_level", nextRisk);
+        writeSession("current_audit_status", nextStatus);
+
+        setReviewError(response?.error_message || null);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The image could not be audited.";
+
+        setAuditStatus("Failed");
+        setRiskLevel("Not assessed");
+        setReviewError(message);
+
+        writeSession("current_audit_status", "Failed");
+        writeSession("current_risk_level", "Not assessed");
+      } finally {
+        event.target.value = "";
+      }
     };
+
+    reader.onerror = () => {
+      setAuditStatus("Failed");
+      setRiskLevel("Not assessed");
+      setReviewError("The selected image could not be read.");
+      writeSession("current_audit_status", "Failed");
+      writeSession("current_risk_level", "Not assessed");
+      event.target.value = "";
+    };
+
     reader.readAsDataURL(file);
   };
 
   const handlePageChange = (newPage: number) => {
-    setCurrentPage(newPage);
-    setIsEditingManually(false);
-    const newPageOpen = findings.filter((f) => f.page === newPage && f.status === "open");
-    if (newPageOpen.length > 0) {
-      setActiveMarkerId(newPageOpen[0].markerId);
-    } else {
-      setActiveMarkerId(1);
-    }
-  };
-
-  const advanceToNextOpen = (currentId: string, updatedList: Finding[]) => {
-    const remainingOnPage = updatedList.filter(
-      (f) => (isImageMode || f.page === currentPage) && f.status === "open" && f.id !== currentId
+    const safePage = Math.max(
+      1,
+      Math.min(totalPages, newPage)
     );
-    if (remainingOnPage.length > 0) {
-      setActiveMarkerId(remainingOnPage[0].markerId);
-    } else {
-      setActiveMarkerId(0);
-    }
+
+    setCurrentPage(safePage);
+    setIsEditingManually(false);
+
+    const nextPageOpen = findings.filter(
+      (finding) =>
+        (isImageMode ||
+          finding.page === safePage ||
+          finding.page == null && safePage === 1) &&
+        finding.status === "open"
+    );
+
+    setActiveMarkerId(
+      nextPageOpen.length > 0
+        ? nextPageOpen[0].markerId
+        : 0
+    );
   };
 
-  // Animated Bézier Connector Arrow
+  const advanceToNextOpen = (
+    currentId: string,
+    updatedList: Finding[]
+  ) => {
+    const remainingOnPage = updatedList.filter(
+      (finding) =>
+        (isImageMode ||
+          finding.page === currentPage ||
+          finding.page == null && currentPage === 1) &&
+        finding.status === "open" &&
+        finding.id !== currentId
+    );
+
+    setActiveMarkerId(
+      remainingOnPage.length > 0
+        ? remainingOnPage[0].markerId
+        : 0
+    );
+  };
+
+  // Calculate the animated connector between the selected finding
+  // and the Magic Fix panel.
   useEffect(() => {
     if (viewMode !== "creative" || activeMarkerId === 0) {
       setArrowPath("");
@@ -556,234 +832,540 @@ export default function Review({ content, setContent }: ReviewProps) {
     }
 
     const updateConnector = () => {
-      const markerEl = markerRefs.current[activeMarkerId];
-      const fixEl = fixPanelRef.current;
-      const cEl = containerRef.current;
+      const markerElement = markerRefs.current[activeMarkerId];
+      const fixElement = fixPanelRef.current;
+      const containerElement = containerRef.current;
 
-      if (markerEl && fixEl && cEl) {
-        const mRect = markerEl.getBoundingClientRect();
-        const fRect = fixEl.getBoundingClientRect();
-        const cRect = cEl.getBoundingClientRect();
+      if (
+        markerElement &&
+        fixElement &&
+        containerElement
+      ) {
+        const markerRect =
+          markerElement.getBoundingClientRect();
+        const fixRect = fixElement.getBoundingClientRect();
+        const containerRect =
+          containerElement.getBoundingClientRect();
 
-        if (mRect.width > 0 && mRect.height > 0) {
-          const x1 = mRect.left + mRect.width / 2 - cRect.left;
-          const y1 = mRect.bottom - cRect.top;
-          const x2 = fRect.left + 50 - cRect.left;
-          const y2 = fRect.top - cRect.top;
-          const cy1 = y1 + (y2 - y1) * 0.5;
-          const cy2 = y1 + (y2 - y1) * 0.5;
-          setArrowPath(`M ${x1} ${y1} C ${x1} ${cy1}, ${x2} ${cy2}, ${x2} ${y2}`);
+        if (markerRect.width > 0 && markerRect.height > 0) {
+          const x1 =
+            markerRect.left +
+            markerRect.width / 2 -
+            containerRect.left;
+          const y1 = markerRect.bottom - containerRect.top;
+          const x2 = fixRect.left + 50 - containerRect.left;
+          const y2 = fixRect.top - containerRect.top;
+          const controlY = y1 + (y2 - y1) * 0.5;
+
+          setArrowPath(
+            `M ${x1} ${y1} C ${x1} ${controlY}, ${x2} ${controlY}, ${x2} ${y2}`
+          );
           return;
         }
       }
+
       setArrowPath("");
     };
 
     updateConnector();
-    const rafId = requestAnimationFrame(updateConnector);
-    const timer1 = setTimeout(updateConnector, 50);
-    const timer2 = setTimeout(updateConnector, 150);
+
+    const animationFrame = requestAnimationFrame(updateConnector);
+    const timer = window.setTimeout(updateConnector, 60);
 
     window.addEventListener("resize", updateConnector);
-    window.addEventListener("scroll", updateConnector, true);
 
     return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timer1);
-      clearTimeout(timer2);
+      cancelAnimationFrame(animationFrame);
+      window.clearTimeout(timer);
       window.removeEventListener("resize", updateConnector);
-      window.removeEventListener("scroll", updateConnector, true);
     };
-  }, [activeMarkerId, viewMode, findings, activePageText, currentPage, imageUrl]);
+  }, [
+    activeMarkerId,
+    viewMode,
+    currentPage,
+    isImageMode,
+    findings,
+    documentText,
+  ]);
 
-  // Apply surgical fix
-  const handleApplyFix = (findingId: string) => {
-    const finding = findings.find((f) => f.id === findingId);
-    if (!finding) return;
-
-    if (!isImageMode && documentText.includes(finding.flagged_text)) {
-      const updated = documentText.replace(finding.flagged_text, finding.suggested_fix);
-      setDocumentText(updated);
-      if (setContent) setContent(updated);
-      sessionStorage.setItem("current_doc_text", updated);
-    }
-
-    const updatedList: Finding[] = findings.map((f) =>
-      f.id === findingId ? { ...f, status: "resolved" as const } : f
+  const handleApplyFix = async (
+    findingId: string,
+    replacementOverride?: string
+  ) => {
+    const target = findings.find(
+      (finding) => finding.id === findingId
     );
-    setFindings(updatedList);
-    sessionStorage.setItem("current_findings", JSON.stringify(updatedList));
 
-    // Update queue state if bulk assets are active
-    if (bulkQueue.length > 0) {
-      const allDone = updatedList.every((f) => f.status === "resolved" || f.status === "dismissed");
-      const updatedQ = bulkQueue.map((a) =>
-        isCurrent(a) ? { ...a, cleared: allDone } : a
-      );
-      setBulkQueue(updatedQ);
-      (window as any).__B4LIVE_QUEUE__ = updatedQ;
-      try {
-        sessionStorage.setItem("bulk_queue", JSON.stringify(updatedQ));
-      } catch {}
-    }
+    if (!target || fixSaving[findingId]) return;
 
-    advanceToNextOpen(findingId, updatedList);
-
-    try {
-      const docId = sessionStorage.getItem("currentDocId") || "doc-1";
-      applyFixToBackend(docId, findingId, "apply");
-    } catch {}
-  };
-
-  const handleSaveManualEdit = (findingId: string) => {
-    const finding = findings.find((f) => f.id === findingId);
-    if (!finding || !manualText.trim()) return;
-
-    if (!isImageMode && documentText.includes(finding.flagged_text)) {
-      const updated = documentText.replace(finding.flagged_text, manualText.trim());
-      setDocumentText(updated);
-      if (setContent) setContent(updated);
-      sessionStorage.setItem("current_doc_text", updated);
-    }
-
-    const updatedList: Finding[] = findings.map((f) =>
-      f.id === findingId
-        ? { ...f, status: "resolved" as const, suggested_fix: manualText.trim() }
-        : f
-    );
-    setFindings(updatedList);
-    sessionStorage.setItem("current_findings", JSON.stringify(updatedList));
-    setIsEditingManually(false);
-    advanceToNextOpen(findingId, updatedList);
-  };
-
-  const handleIgnoreOnce = (findingId: string) => {
-    const updatedList: Finding[] = findings.map((f) =>
-      f.id === findingId ? { ...f, status: "dismissed" as const } : f
-    );
-    setFindings(updatedList);
-    sessionStorage.setItem("current_findings", JSON.stringify(updatedList));
-    advanceToNextOpen(findingId, updatedList);
-  };
-
-  const handleIgnoreAll = (finding: Finding) => {
-    const updatedList: Finding[] = findings.map((f) =>
-      f.flagged_text === finding.flagged_text ? { ...f, status: "dismissed" as const } : f
-    );
-    setFindings(updatedList);
-    sessionStorage.setItem("current_findings", JSON.stringify(updatedList));
-    advanceToNextOpen(finding.id, updatedList);
-  };
-
-  const handleAskAi = async (finding: Finding, customQ?: string) => {
-    const q = (
-      customQ ?? `Why is "${finding.flagged_text}" flagged under ${finding.evidence} and what is the exact legal/brand reasoning?`
+    const replacement = (
+      replacementOverride ?? target.suggested_fix ?? ""
     ).trim();
-    if (!q || aiLoading[finding.id]) return;
-    const history = aiChats[finding.id] ?? [];
-    setAiInputs((prev) => ({ ...prev, [finding.id]: "" }));
-    setAiLoading((prev) => ({ ...prev, [finding.id]: true }));
-    let answer: string;
-    try {
-      const res = await askAI({
-        question: q,
-        node_text: finding.flagged_text,
-        node_type: "Uploaded Content Finding",
-        edge_verdict: finding.severity,
-        history,
-      });
-      answer = res.live === false ? `${res.answer}\n\n⚠ Offline preset answer: ${res.reason ?? "live Gemini not connected"}` : res.answer;
-    } catch {
-      answer = "Unable to reach Gemini reasoning backend.";
+
+    if (!target.flagged_text.trim() || !replacement) {
+      setReviewError(
+        "This finding has no verified flagged text or replacement to apply."
+      );
+      return;
     }
-    setAiChats((prev) => ({ ...prev, [finding.id]: [...history, { role: "user", text: q }, { role: "ai", text: answer }] }));
-    setAiLoading((prev) => ({ ...prev, [finding.id]: false }));
+
+    if (
+      !isImageMode &&
+      !documentText.includes(target.flagged_text)
+    ) {
+      setReviewError(
+        "The flagged text was not found in the current document. No change was applied."
+      );
+      return;
+    }
+
+    if (
+      !isImageMode &&
+      documentText.split(target.flagged_text).length - 1 !== 1
+    ) {
+      setReviewError(
+        "The flagged text appears more than once. The replacement was not applied because the target is ambiguous."
+      );
+      return;
+    }
+
+    setFixSaving((previous) => ({
+      ...previous,
+      [findingId]: true,
+    }));
+
+    try {
+      const result = await applyFixToBackend({
+        finding_id: findingId,
+        flagged_text: target.flagged_text,
+        replacement_text: replacement,
+        explanation: target.explanation,
+        evidence: target.evidence,
+        current_doc_text: documentText,
+      });
+
+      if (
+        result?.status === "error" ||
+        result?.success === false
+      ) {
+        throw new Error(
+          result?.detail ||
+            result?.message ||
+            "The backend did not confirm the fix."
+        );
+      }
+
+      if (!isImageMode) {
+        const updatedDocument = result.updated_text;
+
+        setDocumentText(updatedDocument);
+        setContent?.(updatedDocument);
+        writeSession("current_doc_text", updatedDocument);
+      }
+
+      const nextFindings = findings.map((finding) =>
+        finding.id === findingId
+          ? {
+              ...finding,
+              suggested_fix: replacement,
+              status: "resolved" as const,
+            }
+          : finding
+      );
+
+      persistFindings(nextFindings);
+      onCorrectionApproved?.();
+      if (!isImageMode) {
+        persistActiveBulkAsset(result.updated_text, nextFindings);
+      }
+      setReviewError(null);
+      setCorrectionNotice(
+        "The replacement was applied and passed deterministic checks against current active rules. Other findings may remain."
+      );
+      advanceToNextOpen(findingId, nextFindings);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The fix could not be saved.";
+
+      setReviewError(message);
+    } finally {
+      setFixSaving((previous) => ({
+        ...previous,
+        [findingId]: false,
+      }));
+    }
+  };
+
+  const handleSaveManualEdit = async (
+    findingId: string
+  ) => {
+    const target = findings.find(
+      (finding) => finding.id === findingId
+    );
+    const replacement = manualText.trim();
+
+    if (!target || !replacement || fixSaving[findingId]) {
+      return;
+    }
+
+    if (!isImageMode) {
+      if (!target.flagged_text.trim()) {
+        setReviewError(
+          "The original flagged text is unavailable. No change was applied."
+        );
+        return;
+      }
+
+      const occurrences =
+        documentText.split(target.flagged_text).length - 1;
+
+      if (occurrences !== 1) {
+        setReviewError(
+          occurrences === 0
+            ? "The flagged text was not found in the current document. No change was applied."
+            : "The flagged text appears more than once. No change was applied because the target is ambiguous."
+        );
+        return;
+      }
+    }
+
+    setFixSaving((previous) => ({
+      ...previous,
+      [findingId]: true,
+    }));
+
+    try {
+      const result = await applyFixToBackend({
+        finding_id: findingId,
+        flagged_text: target.flagged_text,
+        replacement_text: replacement,
+        explanation: target.explanation,
+        evidence: target.evidence,
+        current_doc_text: documentText,
+      });
+
+      if (
+        result?.status === "error" ||
+        result?.success === false
+      ) {
+        throw new Error(
+          result?.detail ||
+            result?.message ||
+            "The backend did not confirm the edit."
+        );
+      }
+
+      if (!isImageMode) {
+        const updatedDocument = result.updated_text;
+
+        setDocumentText(updatedDocument);
+        setContent?.(updatedDocument);
+        writeSession("current_doc_text", updatedDocument);
+      }
+
+      const nextFindings = findings.map((finding) =>
+        finding.id === findingId
+          ? {
+              ...finding,
+              suggested_fix: replacement,
+              status: "resolved" as const,
+            }
+          : finding
+      );
+
+      persistFindings(nextFindings);
+      if (!isImageMode) {
+        persistActiveBulkAsset(result.updated_text, nextFindings);
+      }
+      setIsEditingManually(false);
+      setManualText("");
+      setReviewError(null);
+      setCorrectionNotice(
+        "Your replacement was applied and passed deterministic checks against current active rules. Other findings may remain."
+      );
+      advanceToNextOpen(findingId, nextFindings);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The manual edit could not be saved.";
+
+      setReviewError(message);
+    } finally {
+      setFixSaving((previous) => ({
+        ...previous,
+        [findingId]: false,
+      }));
+    }
+  };
+
+  const handleIgnoreOnce = async (findingId: string) => {
+    if (fixSaving[findingId]) return;
+    setFixSaving((previous) => ({ ...previous, [findingId]: true }));
+    try {
+      const result = await dismissFinding(findingId);
+      if (result?.status !== "success") throw new Error("The server did not confirm the dismissal.");
+      const nextFindings = findings.map((finding) =>
+        finding.id === findingId ? { ...finding, status: "dismissed" as const } : finding
+      );
+      persistFindings(nextFindings);
+      setReviewError(null);
+      advanceToNextOpen(findingId, nextFindings);
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "The finding could not be dismissed. Refresh the review and retry.");
+    } finally {
+      setFixSaving((previous) => ({ ...previous, [findingId]: false }));
+    }
+  };
+
+  const handleIgnoreAll = async (target: Finding) => {
+    if (fixSaving[target.id]) return;
+    setFixSaving((previous) => ({ ...previous, [target.id]: true }));
+    try {
+      const result = await dismissMatchingFindings(target.id);
+      if (result?.status !== "success") throw new Error("The server did not confirm the dismissal.");
+      const nextFindings = findings.map((finding) =>
+        finding.flagged_text === target.flagged_text && finding.status === "open"
+          ? { ...finding, status: "dismissed" as const }
+          : finding
+      );
+      persistFindings(nextFindings);
+      setReviewError(null);
+      advanceToNextOpen(target.id, nextFindings);
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "Matching findings could not be dismissed. Refresh the review and retry.");
+    } finally {
+      setFixSaving((previous) => ({ ...previous, [target.id]: false }));
+    }
+  };
+
+  const handleAskAi = async (
+    finding: Finding,
+    query?: string
+  ) => {
+    const userPrompt = (
+      query ||
+      "Explain this finding using the supplied evidence and suggest an alternative."
+    ).trim();
+
+    if (!userPrompt || aiLoading[finding.id]) return;
+
+    const previousConversation = aiChats[finding.id] ?? [];
+
+    const userTurn: ChatTurn = {
+      role: "user",
+      text: userPrompt,
+    };
+
+    setAiChats((previous) => ({
+      ...previous,
+      [finding.id]: [
+        ...(previous[finding.id] ?? []),
+        userTurn,
+      ],
+    }));
+
+    setAiInputs((previous) => ({
+      ...previous,
+      [finding.id]: "",
+    }));
+
+    setAiLoading((previous) => ({
+      ...previous,
+      [finding.id]: true,
+    }));
+
+    try {
+      const response = await askAI({
+        finding: {
+          finding_id: finding.id,
+          flagged_text: finding.flagged_text,
+          explanation: finding.explanation,
+          evidence: finding.evidence,
+          suggested_fix: finding.suggested_fix,
+          severity: finding.severity,
+          location: finding.location,
+        },
+        question: userPrompt,
+        conversation: previousConversation,
+      });
+
+      if (
+        typeof response?.answer !== "string" ||
+        !response.answer.trim()
+      ) {
+        throw new Error("The AI service returned no answer.");
+      }
+
+      const aiTurn: ChatTurn = {
+        role: "ai",
+        text: response.answer,
+      };
+
+      setAiChats((previous) => ({
+        ...previous,
+        [finding.id]: [
+          ...(previous[finding.id] ?? []),
+          aiTurn,
+        ],
+      }));
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "AI consultation failed.";
+
+      const errorTurn: ChatTurn = {
+        role: "ai",
+        text: `AI response unavailable: ${message}`,
+      };
+
+      setAiChats((previous) => ({
+        ...previous,
+        [finding.id]: [
+          ...(previous[finding.id] ?? []),
+          errorTurn,
+        ],
+      }));
+    } finally {
+      setAiLoading((previous) => ({
+        ...previous,
+        [finding.id]: false,
+      }));
+    }
   };
 
   const handleDownload = () => {
-    let contentToDownload = "";
-    if (isImageMode) {
-      contentToDownload =
-        `========================================================================\n` +
-        `BEFORE IT GOES LIVE • COMPLIANCE AUDIT SPECIFICATION\n` +
-        `Asset: ${docTitle} (Visual Advertisement Creative)\n` +
-        `Status: ${allPageResolved ? "APPROVED / CLEARED FOR LAUNCH" : "REVISION REQUIRED"}\n` +
-        `========================================================================\n\n` +
-        pageFindings
+    const contentToDownload = isImageMode
+      ? pageFindings
           .map(
-            (f) =>
-              `[MARKER #${f.markerId} • ${f.severity.toUpperCase()} RISK]\n` +
-              `Location: ${f.location}\n` +
-              `Designer Action: ${f.image_action}\n` +
-              `Flagged Claim: "${f.flagged_text}"\n` +
-              `Violation: ${f.explanation}\n` +
-              `Approved Replacement: "${f.suggested_fix}"\n` +
-              `Regulatory Citation: ${f.evidence}\n` +
-              `Status: ${f.status === "resolved" ? "RESOLVED & APPROVED" : "OPEN"}\n`
+            (finding) =>
+              `[Marker #${finding.markerId} • ${finding.severity.toUpperCase()} RISK]\n` +
+              `Location: ${finding.location || "Not specified"}\n` +
+              `Flagged: "${finding.flagged_text}"\n` +
+              `Explanation: ${finding.explanation}\n` +
+              `Suggested replacement: "${finding.suggested_fix}"\n` +
+              `Evidence: ${finding.evidence || "Not provided"}\n` +
+              `Status: ${finding.status}\n`
           )
-          .join("\n------------------------------------------------------------------------\n\n");
-    } else {
-      contentToDownload = documentText;
-    }
+          .join("\n---\n\n")
+      : documentText;
 
-    const blob = new Blob([contentToDownload], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([contentToDownload], {
+      type: "text/plain;charset=utf-8",
+    });
+
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
+
     link.href = url;
-    link.download = `${docTitle.replace(/\s+/g, "_")}_compliant_spec.txt`;
+    link.download =
+      `${docTitle.replace(/\s+/g, "_")}_review.txt`;
+
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const handleCopy = () => {
-    let textToCopy = "";
-    if (isImageMode) {
-      textToCopy = pageFindings
-        .map(
-          (f) =>
-            `Marker #${f.markerId} (${f.location}):\nApproved Copy: "${f.suggested_fix}"\nCitation: ${f.evidence}`
-        )
-        .join("\n\n");
-    } else {
-      textToCopy = documentText;
+  const handleCopy = async () => {
+    const textToCopy = isImageMode
+      ? pageFindings
+          .map(
+            (finding) =>
+              `Marker #${finding.markerId} (${finding.location || "Location not specified"}):\n` +
+              `Suggested replacement: "${finding.suggested_fix}"\n` +
+              `Status: ${finding.status}`
+          )
+          .join("\n\n")
+      : documentText;
+
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      alert("Copied review content to clipboard.");
+    } catch {
+      setReviewError(
+        "Clipboard access was unavailable. Please copy the text manually."
+      );
     }
-    navigator.clipboard.writeText(textToCopy);
-    alert("📋 Copied compliant specifications to clipboard!");
   };
 
-  const renderAnnotatedPage = (text: string, currentFindings: Finding[]) => {
+  const renderAnnotatedPage = (
+    text: string,
+    currentFindings: Finding[]
+  ) => {
     if (!text) return null;
-    const matching = currentFindings.filter((f) => f.flagged_text && text.includes(f.flagged_text));
+
+    const matching = currentFindings.filter(
+      (finding) =>
+        finding.flagged_text &&
+        text.includes(finding.flagged_text)
+    );
 
     if (matching.length === 0) {
       return (
-        <div style={{ whiteSpace: "pre-line", lineHeight: "1.8", color: "#e2e8f0", fontSize: "14px" }}>
+        <div
+          style={{
+            whiteSpace: "pre-line",
+            lineHeight: "1.8",
+            color: "#e2e8f0",
+            fontSize: "14px",
+          }}
+        >
           {text}
         </div>
       );
     }
 
-    const sorted = [...matching].sort((a, b) => b.flagged_text.length - a.flagged_text.length);
+    const sorted = [...matching].sort(
+      (first, second) =>
+        second.flagged_text.length -
+        first.flagged_text.length
+    );
+
+    const escapeRegex = (value: string) =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
     const regex = new RegExp(
-      `(${sorted.map((m) => m.flagged_text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+      `(${sorted.map((finding) => escapeRegex(finding.flagged_text)).join("|")})`,
       "g"
     );
+
     const parts = text.split(regex);
 
     return (
-      <div style={{ whiteSpace: "pre-line", lineHeight: "2.1", color: "#e2e8f0", fontSize: "14px" }}>
-        {parts.map((part, idx) => {
-          const finding = sorted.find((m) => m.flagged_text === part);
-          if (!finding) return <span key={idx}>{part}</span>;
+      <div
+        style={{
+          whiteSpace: "pre-line",
+          lineHeight: "2.1",
+          color: "#e2e8f0",
+          fontSize: "14px",
+        }}
+      >
+        {parts.map((part, index) => {
+          const finding = sorted.find(
+            (item) => item.flagged_text === part
+          );
+
+          if (!finding) {
+            return <span key={index}>{part}</span>;
+          }
 
           if (finding.status === "dismissed") {
-            return <span key={idx}>{finding.flagged_text}</span>;
+            return (
+              <span key={index}>
+                {finding.flagged_text}
+              </span>
+            );
           }
 
           if (finding.status === "resolved") {
             return (
               <span
-                key={idx}
+                key={index}
                 style={{
                   color: "var(--lime)",
                   fontWeight: 700,
@@ -808,20 +1390,22 @@ export default function Review({ content, setContent }: ReviewProps) {
                     fontWeight: 800,
                   }}
                 >
-                  ✓ Fixed
+                  ✓ Addressed
                 </span>
               </span>
             );
           }
 
-          const isSelected = activeMarkerId === finding.markerId;
+          const isSelected =
+            activeMarkerId === finding.markerId;
 
           return (
             <button
-              key={idx}
+              key={index}
               type="button"
-              ref={(el) => {
-                markerRefs.current[finding.markerId] = el;
+              ref={(element) => {
+                markerRefs.current[finding.markerId] =
+                  element;
               }}
               className={`review-issue-text ${finding.severity} ${isSelected ? "active" : ""}`}
               onClick={() => {
@@ -837,22 +1421,12 @@ export default function Review({ content, setContent }: ReviewProps) {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "6px",
-                verticalAlign: "baseline",
                 border: isSelected
                   ? "2px solid #12c4d4"
-                  : finding.severity === "high"
-                  ? "1.5px dashed #ef4444"
-                  : finding.severity === "medium"
-                  ? "1.5px dashed #f59e0b"
-                  : "1.5px dashed #10b981",
+                  : "1.5px dashed #ef4444",
                 background: isSelected
                   ? "rgba(18, 196, 212, 0.3)"
-                  : finding.severity === "high"
-                  ? "rgba(239, 68, 68, 0.22)"
-                  : finding.severity === "medium"
-                  ? "rgba(245, 158, 11, 0.22)"
-                  : "rgba(16, 185, 129, 0.22)",
-                boxShadow: isSelected ? "0 0 16px rgba(18, 196, 212, 0.6)" : "none",
+                  : "rgba(239, 68, 68, 0.22)",
                 transition: "all 150ms ease",
               }}
             >
@@ -867,16 +1441,14 @@ export default function Review({ content, setContent }: ReviewProps) {
                     finding.severity === "high"
                       ? "#ef4444"
                       : finding.severity === "medium"
-                      ? "#f59e0b"
-                      : "#10b981",
+                        ? "#f59e0b"
+                        : "#64748b",
                   color: "#ffffff",
                   borderRadius: "50%",
                   width: "20px",
                   height: "20px",
-                  lineHeight: "20px",
                   fontWeight: 900,
                   flexShrink: 0,
-                  boxShadow: "0 2px 5px rgba(0,0,0,0.6)",
                 }}
               >
                 {finding.markerId}
@@ -888,27 +1460,61 @@ export default function Review({ content, setContent }: ReviewProps) {
     );
   };
 
-  const allPageResolved = pageFindings.every(
-    (f) => f.status === "resolved" || f.status === "dismissed"
-  );
-  const clearedAssetsCount = bulkQueue.filter((a) => a.cleared).length;
+  const clearedAssetsCount = bulkQueue.filter(
+    (asset) => asset.cleared
+  ).length;
 
-  // Find next uncleared asset in queue
   const activeQueueIndex = bulkQueue.findIndex(isCurrent);
-  const nextUnclearedAsset =
-    bulkQueue.find((a, idx) => idx > activeQueueIndex && !a.cleared) ||
-    bulkQueue.find((a) => !isCurrent(a) && !a.cleared);
 
-  const nextAsset = bulkQueue.length > 1 ? bulkQueue[(activeQueueIndex + 1) % bulkQueue.length] : undefined;
-  const prevAsset = bulkQueue.length > 1 ? bulkQueue[(activeQueueIndex - 1 + bulkQueue.length) % bulkQueue.length] : undefined;
+  const nextUnclearedAsset =
+    bulkQueue.find(
+      (asset, index) =>
+        index > activeQueueIndex && !asset.cleared
+    ) ||
+    bulkQueue.find(
+      (asset) => !isCurrent(asset) && !asset.cleared
+    );
+
+  const nextAsset =
+    bulkQueue.length > 1
+      ? bulkQueue[
+          (Math.max(activeQueueIndex, 0) + 1) %
+            bulkQueue.length
+        ]
+      : undefined;
+
+  const prevAsset =
+    bulkQueue.length > 1
+      ? bulkQueue[
+          (Math.max(activeQueueIndex, 0) -
+            1 +
+            bulkQueue.length) %
+            bulkQueue.length
+        ]
+      : undefined;
+
+  const isAuditIncomplete = [
+    "failed",
+    "incomplete analysis",
+  ].includes(auditStatus.toLowerCase());
+
+  const openCount = pageFindings.filter(
+    (finding) => finding.status === "open"
+  ).length;
+
+  const resolvedCount = pageFindings.filter(
+    (finding) => finding.status === "resolved"
+  ).length;
+
+  const dismissedCount = pageFindings.filter(
+    (finding) => finding.status === "dismissed"
+  ).length;
 
   return (
     <div className="page">
       <style>{`
         @keyframes connector-dash {
-          to {
-            stroke-dashoffset: -24;
-          }
+          to { stroke-dashoffset: -24; }
         }
       `}</style>
 
@@ -920,138 +1526,239 @@ export default function Review({ content, setContent }: ReviewProps) {
         style={{ display: "none" }}
       />
 
-      {/* ========================================================================= */}
-      {/* 📦 BATCH / BULK IMPORT QUEUE BOX */}
-      {/* ========================================================================= */}
+      {onBackToHome && (
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onBackToHome}
+          style={{ display: "inline-flex", alignItems: "center", gap: 7, marginBottom: 16 }}
+        >
+          <ArrowLeft size={16} /> Back
+        </button>
+      )}
+
+      <div
+        role="note"
+        style={{
+          marginBottom: "16px",
+          padding: "11px 14px",
+          borderRadius: "10px",
+          border: "1px solid rgba(18, 196, 212, 0.35)",
+          background: "rgba(18, 196, 212, 0.07)",
+          color: "#cbd5e1",
+          fontSize: "12px",
+          lineHeight: 1.6,
+        }}
+      >
+        <strong style={{ color: "#12c4d4" }}>Review scope:</strong> Results cover only the active rules you provide, approve from uploaded guidelines, or choose from templates. Content is not checked against every law, standard, or factual source. This review is not a certification or guarantee of compliance; verify the rules and supporting evidence that apply.
+      </div>
+
+      {/* Batch import queue */}
       {bulkQueue.length > 0 && (
         <div
           style={{
-            background: "linear-gradient(180deg, #101535 0%, #080a1c 100%)",
+            background:
+              "linear-gradient(180deg, #101535 0%, #080a1c 100%)",
             border: "1.5px solid #12c4d4",
             borderRadius: "16px",
             padding: "16px 20px",
             marginBottom: "24px",
-            boxShadow: "0 4px 24px rgba(18, 196, 212, 0.15)",
           }}
         >
-          <style>{`
-            @keyframes queue-pulse { 0%,100% { opacity: 1 } 50% { opacity: .45 } }
-            .queue-strip { scrollbar-width: thin; scrollbar-color: #252a48 transparent; }
-          `}</style>
-
-          {/* header: title, progress, prev / next */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "10px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ background: "rgba(18, 196, 212, 0.2)", color: "#12c4d4", borderRadius: "8px", padding: "6px 10px", display: "flex", alignItems: "center", gap: "6px", fontWeight: 800, fontSize: "13px", letterSpacing: "0.5px" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "14px",
+              flexWrap: "wrap",
+              gap: "10px",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+              }}
+            >
+              <div
+                style={{
+                  background: "rgba(18, 196, 212, 0.2)",
+                  color: "#12c4d4",
+                  borderRadius: "8px",
+                  padding: "6px 10px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontWeight: 800,
+                  fontSize: "13px",
+                }}
+              >
                 <Layers size={16} /> BATCH IMPORT QUEUE
               </div>
-              <span style={{ fontSize: "13px", color: "#94a3b8", fontWeight: 600 }}>
-                File {Math.max(activeQueueIndex, 0) + 1} of {bulkQueue.length} · {clearedAssetsCount} cleared
+
+              <span
+                style={{
+                  fontSize: "13px",
+                  color: "#94a3b8",
+                  fontWeight: 600,
+                }}
+              >
+                File {Math.max(activeQueueIndex, 0) + 1} of{" "}
+                {bulkQueue.length} · {clearedAssetsCount} cleared
               </span>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
               {clearedAssetsCount === bulkQueue.length && (
-                <span style={{ background: "rgba(198, 244, 91, 0.2)", color: "#c6f45b", border: "1px solid #c6f45b", padding: "6px 14px", borderRadius: "8px", fontSize: "12px", fontWeight: 800 }}>
-                  🎉 ALL ASSETS IN BATCH CLEARED FOR LAUNCH
+                <span
+                  style={{
+                    background: "rgba(198, 244, 91, 0.2)",
+                    color: "#c6f45b",
+                    border: "1px solid #c6f45b",
+                    padding: "6px 14px",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    fontWeight: 800,
+                  }}
+                >
+                  All queue items marked cleared
                 </span>
               )}
+
               {prevAsset && (
                 <button
-                  onClick={() => handleSwitchBulkAsset(prevAsset)}
-                  title={`Previous: ${prevAsset.name}`}
-                  style={{ background: "#171b35", color: "#12c4d4", border: "1.5px solid #12c4d4", borderRadius: "8px", padding: "8px 12px", fontSize: "12px", fontWeight: 800, cursor: "pointer" }}
+                  onClick={() =>
+                    handleSwitchBulkAsset(prevAsset)
+                  }
+                  style={{
+                    background: "#171b35",
+                    color: "#12c4d4",
+                    border: "1.5px solid #12c4d4",
+                    borderRadius: "8px",
+                    padding: "8px 12px",
+                    fontSize: "12px",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
                 >
                   ← Prev
                 </button>
               )}
+
               {nextAsset && (
                 <button
-                  onClick={() => handleSwitchBulkAsset(nextAsset)}
-                  title={`Next: ${nextAsset.name}`}
+                  onClick={() =>
+                    handleSwitchBulkAsset(nextAsset)
+                  }
                   style={{
-                    background: allPageResolved ? "#c6f45b" : "#171b35",
-                    color: allPageResolved ? "#080a1c" : "#12c4d4",
-                    border: allPageResolved ? "none" : "1.5px solid #12c4d4",
+                    background: "#171b35",
+                    color: "#12c4d4",
+                    border: "1.5px solid #12c4d4",
                     borderRadius: "8px",
                     padding: "8px 16px",
                     fontSize: "12px",
                     fontWeight: 800,
                     cursor: "pointer",
-                    boxShadow: allPageResolved ? "0 0 16px rgba(198, 244, 91, 0.45)" : "none",
-                    transition: "all 0.2s ease",
                   }}
                 >
-                  Next → {nextAsset.name.length > 28 ? nextAsset.name.slice(0, 26) + "…" : nextAsset.name}
+                  Next →{" "}
+                  {nextAsset.name.length > 25
+                    ? `${nextAsset.name.slice(0, 23)}…`
+                    : nextAsset.name}
                 </button>
               )}
             </div>
           </div>
 
-          {/* one scrolling row: ongoing file first in focus, the rest waiting in queue */}
-          <div className="queue-strip" style={{ display: "flex", gap: "12px", overflowX: "auto", paddingBottom: "6px" }}>
-            {bulkQueue.map((asset, idx) => {
+          <div
+            style={{
+              display: "flex",
+              gap: "12px",
+              overflowX: "auto",
+              paddingBottom: "6px",
+            }}
+          >
+            {bulkQueue.map((asset, index) => {
               const active = isCurrent(asset);
-              const status = asset.cleared ? "cleared" : active ? "ongoing" : "queued";
-              const pill = {
-                cleared: { text: "✓ CLEARED", color: "#c6f45b", bg: "rgba(198, 244, 91, 0.15)" },
-                ongoing: { text: "● ONGOING", color: "#12c4d4", bg: "rgba(18, 196, 212, 0.2)" },
-                queued: { text: "⏳ IN QUEUE", color: "#94a3b8", bg: "rgba(148, 163, 184, 0.15)" },
-              }[status];
+
               return (
                 <div
-                  key={asset.id || idx}
-                  id={`queue-card-${asset.id}`}
-                  onClick={() => handleSwitchBulkAsset(asset)}
+                  key={asset.id || index}
+                  onClick={() =>
+                    handleSwitchBulkAsset(asset)
+                  }
                   style={{
                     flex: "0 0 240px",
-                    background: active ? "rgba(18, 196, 212, 0.15)" : "#0c1024",
-                    border: active ? "2px solid #12c4d4" : asset.cleared ? "1.5px solid #c6f45b80" : "1px solid #252a48",
+                    background: active
+                      ? "rgba(18, 196, 212, 0.15)"
+                      : "#0c1024",
+                    border: active
+                      ? "2px solid #12c4d4"
+                      : asset.cleared
+                        ? "1.5px solid #c6f45b80"
+                        : "1px solid #252a48",
                     borderRadius: "10px",
                     padding: "12px",
                     cursor: "pointer",
-                    opacity: status === "queued" ? 0.85 : 1,
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "8px",
-                    boxShadow: active ? "0 0 14px rgba(18, 196, 212, 0.3)" : "none",
-                    transition: "all 0.15s ease",
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: "11px", color: active ? "#12c4d4" : "#94a3b8", fontWeight: 700 }}>QUEUE #{idx + 1}</span>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: "6px",
+                    }}
+                  >
                     <span
                       style={{
-                        fontSize: "10px", fontWeight: 800, padding: "2px 8px", borderRadius: "4px",
-                        color: pill.color, background: pill.bg,
-                        animation: status === "ongoing" ? "queue-pulse 1.6s ease-in-out infinite" : "none",
+                        fontSize: "11px",
+                        color: active ? "#12c4d4" : "#94a3b8",
+                        fontWeight: 700,
                       }}
                     >
-                      {pill.text}
+                      QUEUE #{index + 1}
+                    </span>
+
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        fontWeight: 800,
+                        color: asset.cleared
+                          ? "#c6f45b"
+                          : active
+                            ? "#12c4d4"
+                            : "#94a3b8",
+                      }}
+                    >
+                      {asset.cleared
+                        ? "✓ CLEARED"
+                        : active
+                          ? "● ONGOING"
+                          : "⏳ IN QUEUE"}
                     </span>
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-                    {asset.fileType === "image" && asset.dataUrl ? (
-                      <img src={asset.dataUrl} alt="" style={{ width: "38px", height: "38px", objectFit: "cover", borderRadius: "6px", flexShrink: 0 }} />
-                    ) : (
-                      <span style={{ fontSize: "24px", flexShrink: 0 }}>
-                        {asset.fileType === "image" ? "🖼️" : asset.fileType === "pdf" ? "📄" : asset.fileType === "pptx" ? "📊" : "📝"}
-                      </span>
-                    )}
-                    <strong style={{ fontSize: "13px", color: active ? "#ffffff" : "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {asset.name}
-                    </strong>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#64748b" }}>
-                    <span>{asset.category || (asset.fileType === "image" ? "Visual Creative" : "Document")}</span>
-                    {asset.priority && (
-                      <span style={{ color: asset.priority === "high" ? "#ef4444" : asset.priority === "medium" ? "#f59e0b" : "#34d399", fontWeight: 700 }}>
-                        {asset.priority.toUpperCase()} RISK
-                      </span>
-                    )}
-                  </div>
+                  <strong
+                    style={{
+                      fontSize: "13px",
+                      color: active ? "#ffffff" : "#cbd5e1",
+                      display: "block",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {asset.name}
+                  </strong>
                 </div>
               );
             })}
@@ -1059,12 +1766,94 @@ export default function Review({ content, setContent }: ReviewProps) {
         </div>
       )}
 
-      {/* Top Header & View Toggle */}
-      <div className="section-heading" style={{ marginBottom: "20px" }}>
+      {/* Header and view toggle */}
+      <div
+        className="section-heading"
+        style={{ marginBottom: "20px" }}
+      >
         <div>
-          <span className="eyebrow">PRE-FLIGHT RELEASE GATE</span>
-          <h2>Automated Claims & Content Review</h2>
+          <span className="eyebrow">
+            PRE-FLIGHT RELEASE GATE
+          </span>
+          <h2>Automated Claims &amp; Content Review</h2>
         </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap",
+          }}
+        >
+          <span
+            style={{
+              padding: "6px 14px",
+              borderRadius: "8px",
+              fontSize: "12px",
+              fontWeight: 800,
+              background:
+                riskLevel === "High Risk"
+                  ? "rgba(239, 68, 68, 0.2)"
+                  : riskLevel === "Medium Risk"
+                    ? "rgba(245, 158, 11, 0.2)"
+                    : isAuditIncomplete
+                      ? "rgba(239, 68, 68, 0.2)"
+                      : ["compliant", "passed"].includes(
+                            auditStatus.toLowerCase()
+                          )
+                        ? "rgba(198, 244, 91, 0.2)"
+                        : "rgba(148, 163, 184, 0.16)",
+              color:
+                riskLevel === "High Risk"
+                  ? "#ef4444"
+                  : riskLevel === "Medium Risk"
+                    ? "#f59e0b"
+                    : isAuditIncomplete
+                      ? "#ef4444"
+                      : ["compliant", "passed"].includes(
+                            auditStatus.toLowerCase()
+                          )
+                        ? "var(--lime)"
+                        : "#94a3b8",
+              border: `1px solid ${
+                riskLevel === "High Risk"
+                  ? "#ef4444"
+                  : riskLevel === "Medium Risk"
+                    ? "#f59e0b"
+                    : isAuditIncomplete
+                      ? "#ef4444"
+                      : ["compliant", "passed"].includes(
+                            auditStatus.toLowerCase()
+                          )
+                        ? "var(--lime)"
+                        : "#64748b"
+              }`,
+            }}
+          >
+            {isAuditIncomplete
+              ? "⚠️ ANALYSIS INCOMPLETE"
+              : ["compliant", "passed"].includes(
+                    auditStatus.toLowerCase()
+                  )
+                ? `🛡️ ${riskLevel.toUpperCase()}`
+                : `ⓘ ${riskLevel.toUpperCase()}`}
+          </span>
+
+          <span
+            style={{
+              fontSize: "12px",
+              color: "#94a3b8",
+              fontWeight: 600,
+            }}
+          >
+            Status:{" "}
+            <strong style={{ color: "#fff" }}>
+              {auditStatus}
+            </strong>
+          </span>
+        </div>
+
         <div
           style={{
             display: "flex",
@@ -1077,20 +1866,101 @@ export default function Review({ content, setContent }: ReviewProps) {
         >
           <button
             onClick={() => setViewMode("creative")}
-            className={viewMode === "creative" ? "primary-button" : "secondary-button"}
-            style={{ minHeight: "36px", fontSize: "12px", padding: "8px 14px" }}
+            className={
+              viewMode === "creative"
+                ? "primary-button"
+                : "secondary-button"
+            }
+            style={{
+              minHeight: "36px",
+              fontSize: "12px",
+              padding: "8px 14px",
+            }}
           >
             🎨 Creative Art View
           </button>
+
           <button
             onClick={() => setViewMode("graph")}
-            className={viewMode === "graph" ? "primary-button" : "secondary-button"}
-            style={{ minHeight: "36px", fontSize: "12px", padding: "8px 14px" }}
+            className={
+              viewMode === "graph"
+                ? "primary-button"
+                : "secondary-button"
+            }
+            style={{
+              minHeight: "36px",
+              fontSize: "12px",
+              padding: "8px 14px",
+            }}
           >
             🕸️ Interactive Knowledge Graph
           </button>
         </div>
       </div>
+
+      {correctionNotice && (
+        <div
+          role="status"
+          style={{
+            marginBottom: "16px",
+            padding: "12px 16px",
+            borderRadius: "8px",
+            border: "1px solid rgba(198, 244, 91, 0.45)",
+            background: "rgba(198, 244, 91, 0.08)",
+            color: "var(--lime)",
+            fontSize: "13px",
+            lineHeight: 1.6,
+          }}
+        >
+          {correctionNotice}
+          <button
+            onClick={() => setCorrectionNotice(null)}
+            aria-label="Dismiss correction result"
+            style={{
+              float: "right",
+              background: "transparent",
+              color: "var(--lime)",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {errorMessage && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: "16px",
+            padding: "12px 16px",
+            borderRadius: "8px",
+            border: "1px solid rgba(239, 68, 68, 0.6)",
+            background: "rgba(239, 68, 68, 0.08)",
+            color: "#ffb4a9",
+            fontSize: "13px",
+            lineHeight: 1.6,
+          }}
+        >
+          <strong>Notice:</strong> {errorMessage}
+          <button
+            onClick={() => setReviewError(null)}
+            aria-label="Dismiss notice"
+            style={{
+              float: "right",
+              background: "transparent",
+              color: "#ffb4a9",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {viewMode === "graph" ? (
         <GraphView
@@ -1100,30 +1970,56 @@ export default function Review({ content, setContent }: ReviewProps) {
           pages={pages}
           totalPages={totalPages}
           currentPage={currentPage}
-          onNavigateToPage={(pageNum, markerId) => {
-            handlePageChange(pageNum);
-            if (markerId) setActiveMarkerId(markerId);
+          onNavigateToPage={(pageNumber, markerId) => {
+            handlePageChange(pageNumber);
+
+            if (markerId) {
+              setActiveMarkerId(markerId);
+            }
+
             setViewMode("creative");
           }}
         />
       ) : (
         <div className="review-layout">
-          {/* ========================================================================= */}
-          {/* LEFT: SCANNED ASSET (IMAGE OR MULTI-PAGE TEXT) */}
-          {/* ========================================================================= */}
-          <div className="review-visual-workspace" ref={containerRef} style={{ position: "relative" }}>
+          {/* Left: document and findings */}
+          <div
+            className="review-visual-workspace"
+            ref={containerRef}
+            style={{ position: "relative" }}
+          >
             <div className="creative-preview">
               <div
                 className="creative-topline"
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
               >
-                <span>SCANNED MARKETING ASSET {isImageMode ? "• VISUAL AD CREATIVE" : ""}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span>{pageFindings.length} MARKERS DETECTED</span>
+                <span>
+                  SCANNED MARKETING ASSET{" "}
+                  {isImageMode ? "• VISUAL AD CREATIVE" : ""}
+                </span>
+
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                  }}
+                >
+                  <span>
+                    {openCount} OPEN · {resolvedCount} RESOLVED ·{" "}
+                    {dismissedCount} DISMISSED
+                  </span>
+
                   {isImageMode && (
                     <button
                       className="secondary-button"
-                      onClick={() => imageFileInputRef.current?.click()}
+                      onClick={() =>
+                        imageFileInputRef.current?.click()
+                      }
                       style={{
                         minHeight: "26px",
                         padding: "3px 8px",
@@ -1132,13 +2028,17 @@ export default function Review({ content, setContent }: ReviewProps) {
                         color: "var(--cyan)",
                       }}
                     >
-                      <Upload size={11} style={{ marginRight: 4 }} /> Change Image
+                      <Upload
+                        size={11}
+                        style={{ marginRight: 4 }}
+                      />
+                      Change Image
                     </button>
                   )}
+
                   <button
                     className="icon-button"
                     onClick={() => setIsFullscreen(true)}
-                    title="Fullscreen Mode"
                     style={{
                       background: "transparent",
                       border: "none",
@@ -1155,7 +2055,6 @@ export default function Review({ content, setContent }: ReviewProps) {
                 </div>
               </div>
 
-              {/* 📄 DYNAMIC PAGINATION BAR FOR MULTI-PAGE DOCUMENTS */}
               {totalPages > 1 && !isImageMode && (
                 <div
                   style={{
@@ -1168,44 +2067,70 @@ export default function Review({ content, setContent }: ReviewProps) {
                     fontSize: "12px",
                   }}
                 >
-                  <span style={{ color: "#94a3b8", fontWeight: 600 }}>
+                  <span
+                    style={{
+                      color: "#94a3b8",
+                      fontWeight: 600,
+                    }}
+                  >
                     📄 Document:{" "}
                     <strong style={{ color: "#fff" }}>
                       Page {currentPage} of {totalPages}
                     </strong>
                   </span>
-                  <div style={{ display: "flex", alignItems: "center", gap: "4px", overflowX: "auto", maxWidth: "60%" }}>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                    }}
+                  >
                     <button
                       className="icon-button"
                       disabled={currentPage <= 1}
-                      onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-                      style={{ padding: "2px 6px" }}
+                      onClick={() =>
+                        handlePageChange(currentPage - 1)
+                      }
                     >
                       <ChevronLeft size={14} />
                     </button>
-                    {Array.from({ length: totalPages }).map((_, i) => (
-                      <button
-                        key={i}
-                        onClick={() => handlePageChange(i + 1)}
-                        style={{
-                          background: currentPage === i + 1 ? "#12c4d4" : "#171b35",
-                          color: currentPage === i + 1 ? "#080a1c" : "#94a3b8",
-                          border: "none",
-                          borderRadius: "4px",
-                          padding: "2px 8px",
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          cursor: "pointer",
-                        }}
-                      >
-                        P.{i + 1}
-                      </button>
-                    ))}
+
+                    {Array.from({ length: totalPages }).map(
+                      (_, index) => (
+                        <button
+                          key={index}
+                          onClick={() =>
+                            handlePageChange(index + 1)
+                          }
+                          style={{
+                            background:
+                              currentPage === index + 1
+                                ? "#12c4d4"
+                                : "#171b35",
+                            color:
+                              currentPage === index + 1
+                                ? "#080a1c"
+                                : "#94a3b8",
+                            border: "none",
+                            borderRadius: "4px",
+                            padding: "2px 8px",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            cursor: "pointer",
+                          }}
+                        >
+                          P.{index + 1}
+                        </button>
+                      )
+                    )}
+
                     <button
                       className="icon-button"
                       disabled={currentPage >= totalPages}
-                      onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-                      style={{ padding: "2px 6px" }}
+                      onClick={() =>
+                        handlePageChange(currentPage + 1)
+                      }
                     >
                       <ChevronRight size={14} />
                     </button>
@@ -1213,16 +2138,12 @@ export default function Review({ content, setContent }: ReviewProps) {
                 </div>
               )}
 
-              {/* Scanned Card */}
               <div
                 className="creative-art"
                 style={{
                   maxHeight: "440px",
                   overflowY: "auto",
                   padding: isImageMode ? "14px" : "28px",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
                 }}
               >
                 {isImageMode && imageUrl ? (
@@ -1234,45 +2155,60 @@ export default function Review({ content, setContent }: ReviewProps) {
                       overflow: "hidden",
                       background: "#080a1c",
                       display: "flex",
-                      justifyContent: "center",
-                      border: "1px solid var(--border)",
+                      flexDirection: "column",
+                      alignItems: "center",
                     }}
                   >
                     <img
                       src={imageUrl}
-                      alt="Scanned Marketing Visual Asset"
+                      alt="Scanned marketing asset"
                       style={{
                         width: "100%",
                         maxHeight: "400px",
                         objectFit: "contain",
-                        display: "block",
                         borderRadius: "8px",
                       }}
                     />
+
                     {pageFindings.map((finding) => {
-                      const isSelected = activeMarkerId === finding.markerId;
-                      const posX = finding.pinX || (finding.markerId === 1 ? 21 : finding.markerId === 2 ? 47 : 25);
-                      const posY = finding.pinY || (finding.markerId === 1 ? 47 : finding.markerId === 2 ? 47 : 14);
+                      if (
+                        finding.pinX == null ||
+                        finding.pinY == null ||
+                        !Number.isFinite(finding.pinX) ||
+                        !Number.isFinite(finding.pinY) ||
+                        finding.pinX < 0 ||
+                        finding.pinX > 100 ||
+                        finding.pinY < 0 ||
+                        finding.pinY > 100
+                      ) {
+                        return null;
+                      }
+
+                      const selected =
+                        activeMarkerId === finding.markerId;
 
                       return (
                         <button
-                          key={finding.markerId}
+                          key={finding.id}
                           type="button"
-                          ref={(el) => {
-                            markerRefs.current[finding.markerId] = el;
+                          ref={(element) => {
+                            markerRefs.current[finding.markerId] =
+                              element;
                           }}
                           onClick={() => {
                             setActiveMarkerId(finding.markerId);
                             setIsEditingManually(false);
                           }}
-                          title={`Marker #${finding.markerId}: ${finding.flagged_text}`}
+                          aria-label={`Finding ${finding.markerId}`}
                           style={{
                             position: "absolute",
-                            left: `${posX}%`,
-                            top: `${posY}%`,
+                            left: `${finding.pinX}%`,
+                            top: `${finding.pinY}%`,
                             transform: "translate(-50%, -50%)",
                             cursor: "pointer",
-                            border: isSelected ? "3px solid #12c4d4" : "2px solid #ffffff",
+                            border: selected
+                              ? "3px solid #12c4d4"
+                              : "2px solid #ffffff",
                             borderRadius: "50%",
                             width: "32px",
                             height: "32px",
@@ -1280,48 +2216,150 @@ export default function Review({ content, setContent }: ReviewProps) {
                               finding.status === "resolved"
                                 ? "var(--lime)"
                                 : finding.severity === "high"
-                                ? "#ef4444"
-                                : finding.severity === "medium"
-                                ? "#f59e0b"
-                                : "#10b981",
-                            color: finding.status === "resolved" ? "#080a1c" : "#ffffff",
+                                  ? "#ef4444"
+                                  : finding.severity === "medium"
+                                    ? "#f59e0b"
+                                    : "#64748b",
+                            color:
+                              finding.status === "resolved"
+                                ? "#080a1c"
+                                : "#ffffff",
                             fontWeight: 900,
                             fontSize: "14px",
                             display: "grid",
                             placeItems: "center",
-                            boxShadow: isSelected
-                              ? "0 0 20px #12c4d4, 0 0 0 5px rgba(18, 196, 212, 0.45)"
+                            boxShadow: selected
+                              ? "0 0 20px #12c4d4"
                               : "0 4px 12px rgba(0,0,0,0.7)",
-                            zIndex: isSelected ? 10 : 5,
-                            transition: "all 180ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+                            zIndex: selected ? 10 : 5,
                           }}
                         >
-                          {finding.status === "resolved" ? "✓" : finding.markerId}
+                          {finding.status === "resolved"
+                            ? "✓"
+                            : finding.markerId}
                         </button>
                       );
                     })}
+
+                    {/* Findings tray, including findings without real pins */}
+                    {pageFindings.length > 0 && (
+                      <div
+                        style={{
+                          width: "100%",
+                          marginTop: "10px",
+                          display: "flex",
+                          gap: "6px",
+                          flexWrap: "wrap",
+                          background: "rgba(8, 10, 28, 0.88)",
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          border:
+                            "1px solid rgba(255, 255, 255, 0.15)",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            color: "#94a3b8",
+                            alignSelf: "center",
+                            fontWeight: 700,
+                            marginRight: "4px",
+                          }}
+                        >
+                          {pageFindings.some(
+                            (finding) =>
+                              finding.pinX != null &&
+                              finding.pinY != null &&
+                              finding.pinX >= 0 &&
+                              finding.pinX <= 100 &&
+                              finding.pinY >= 0 &&
+                              finding.pinY <= 100
+                          )
+                            ? "Markers / findings:"
+                            : "Findings (no verified pin):"}
+                        </span>
+
+                        {pageFindings.map((finding) => {
+                          const selected =
+                            activeMarkerId === finding.markerId;
+
+                          return (
+                            <button
+                              key={finding.id}
+                              type="button"
+                              ref={(element) => {
+                                if (
+                                  finding.pinX == null ||
+                                  finding.pinY == null
+                                ) {
+                                  markerRefs.current[
+                                    finding.markerId
+                                  ] = element;
+                                }
+                              }}
+                              onClick={() => {
+                                setActiveMarkerId(
+                                  finding.markerId
+                                );
+                                setIsEditingManually(false);
+                              }}
+                              style={{
+                                background: selected
+                                  ? "#12c4d4"
+                                  : finding.status === "resolved"
+                                    ? "rgba(198, 244, 91, 0.2)"
+                                    : "#1e293b",
+                                color: selected
+                                  ? "#080a1c"
+                                  : finding.status === "resolved"
+                                    ? "var(--lime)"
+                                    : "#fff",
+                                border: selected
+                                  ? "1.5px solid #12c4d4"
+                                  : "1px solid #334155",
+                                borderRadius: "6px",
+                                padding: "3px 8px",
+                                fontSize: "11px",
+                                fontWeight: 800,
+                                cursor: "pointer",
+                              }}
+                            >
+                              #{finding.markerId}{" "}
+                              {finding.status === "resolved"
+                                ? "✓"
+                                : `(${finding.severity.toUpperCase()})`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div style={{ width: "100%" }}>
-                    <div className="creative-decoration" />
-                    <span className="creative-kicker">{docTitle.toUpperCase()}</span>
-                    <h2 style={{ fontSize: "22px", margin: "4px 0 16px 0", color: "#ffffff" }}>{docTitle}</h2>
-                    {renderAnnotatedPage(activePageText, pageFindings)}
+                    <span className="creative-kicker">
+                      {docTitle.toUpperCase()}
+                    </span>
+                    <h2
+                      style={{
+                        fontSize: "22px",
+                        margin: "4px 0 16px 0",
+                        color: "#ffffff",
+                      }}
+                    >
+                      {docTitle}
+                    </h2>
+                    {renderAnnotatedPage(
+                      originalPageText,
+                      pageFindings
+                    )}
                   </div>
                 )}
               </div>
-
-              <div className="preview-legend">
-                <span><i className="legend-high" /> 1: High Risk</span>
-                <span><i className="legend-medium" /> 2: Medium Risk</span>
-                <span><i className="legend-low" /> 3: Low Risk</span>
-              </div>
             </div>
 
-            {/* Moving Animated SVG Connector Arrow */}
+            {/* Animated connector */}
             {arrowPath && (
               <svg
-                className="review-connector"
                 aria-hidden="true"
                 style={{
                   position: "absolute",
@@ -1334,10 +2372,21 @@ export default function Review({ content, setContent }: ReviewProps) {
                 }}
               >
                 <defs>
-                  <marker id="review-arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
-                    <polygon points="0 1, 8 4, 0 7" fill="#12c4d4" />
+                  <marker
+                    id="review-arrowhead"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="6"
+                    refY="4"
+                    orient="auto"
+                  >
+                    <polygon
+                      points="0 1, 8 4, 0 7"
+                      fill="#12c4d4"
+                    />
                   </marker>
                 </defs>
+
                 <path
                   d={arrowPath}
                   fill="none"
@@ -1347,363 +2396,790 @@ export default function Review({ content, setContent }: ReviewProps) {
                   strokeDasharray="6 6"
                   markerEnd="url(#review-arrowhead)"
                   style={{
-                    animation: "connector-dash 650ms linear infinite",
-                    filter: "drop-shadow(0 0 6px #12c4d4)",
+                    animation:
+                      "connector-dash 650ms linear infinite",
                   }}
                 />
               </svg>
             )}
 
-            {/* MAGIC FIX PANEL */}
-            <div className="magic-fix-panel" ref={fixPanelRef}>
-              {allPageResolved ? (
-                <div style={{ textAlign: "center", padding: "16px 0" }}>
-                  <div style={{ fontSize: "28px", marginBottom: "6px" }}>🎉</div>
-                  <strong style={{ color: "var(--lime)", fontSize: "15px" }}>
-                    All Marketing Violations Resolved & Cleared!
+            {/* Magic Fix panel */}
+            <div
+              className="magic-fix-panel"
+              ref={fixPanelRef}
+            >
+              {isAuditIncomplete ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "20px 10px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: "32px",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    ⚠️
+                  </div>
+
+                  <strong
+                    style={{
+                      color: "#ef4444",
+                      fontSize: "16px",
+                      display: "block",
+                    }}
+                  >
+                    Analysis Incomplete or Failed
                   </strong>
-                  <p className="muted" style={{ fontSize: "12px", marginTop: "4px" }}>
-                    {docTitle} has passed regulatory clearance.
+
+                  <p
+                    className="muted"
+                    style={{
+                      fontSize: "12px",
+                      marginTop: "8px",
+                      lineHeight: "1.6",
+                    }}
+                  >
+                    {errorMessage ||
+                      "The asset could not be fully verified. Missing findings do not indicate compliance."}
                   </p>
+
+                  <div style={{ marginTop: "12px" }}>
+                    <span
+                      className="pill"
+                      style={{
+                        background: "rgba(239, 68, 68, 0.15)",
+                        color: "#ef4444",
+                        border: "1px solid #ef4444",
+                        fontSize: "11px",
+                      }}
+                    >
+                      STATUS: {auditStatus.toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+              ) : findings.length === 0 ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "20px 10px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: "32px",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    ⓘ
+                  </div>
+
+                  <strong
+                    style={{
+                      color: "var(--cyan)",
+                      fontSize: "16px",
+                      display: "block",
+                    }}
+                  >
+                    {auditStatus === "Awaiting audit"
+                      ? "No review loaded"
+                      : /incomplete|failed/i.test(auditStatus)
+                        ? "Analysis incomplete"
+                        : auditStatus === "Compliant"
+                          ? "No active-rule findings"
+                          : "No Findings Returned"}
+                  </strong>
+
+                  <p
+                    className="muted"
+                    style={{
+                      fontSize: "12px",
+                      marginTop: "8px",
+                      lineHeight: "1.6",
+                    }}
+                  >
+                    {errorMessage ||
+                      (auditStatus === "Awaiting audit"
+                        ? "Choose an asset from Home and run a review to see its results."
+                        : auditStatus === "Compliant"
+                          ? "The completed audit returned no findings against the active rules. Review the audit status before release."
+                          : "An empty findings list is not a compliance pass. Check the audit status and active rules, then retry from Home if analysis did not complete.")}
+                  </p>
+
+                  <div style={{ marginTop: "12px" }}>
+                    <span
+                      className="pill"
+                      style={{
+                        background: "rgba(18, 196, 212, 0.12)",
+                        color: "var(--cyan)",
+                        border: "1px solid var(--cyan)",
+                        fontSize: "11px",
+                      }}
+                    >
+                      STATUS: {auditStatus.toUpperCase()}
+                    </span>
+                  </div>
+
                   {nextUnclearedAsset && (
                     <button
-                      onClick={() => handleSwitchBulkAsset(nextUnclearedAsset)}
+                      onClick={() =>
+                        handleSwitchBulkAsset(nextUnclearedAsset)
+                      }
+                      className="primary-button"
+                      style={{
+                        marginTop: "16px",
+                        background: "var(--lime)",
+                        color: "#080a1c",
+                        fontWeight: 800,
+                      }}
+                    >
+                      Audit Next Asset in Queue →
+                    </button>
+                  )}
+
+                  {auditStatus !== "Compliant" && onBackToHome && (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ marginTop: "12px" }}
+                      onClick={onBackToHome}
+                    >
+                      Return to asset intake
+                    </button>
+                  )}
+                </div>
+              ) : allPageResolved ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "16px 0",
+                  }}
+                >
+                  <div style={{ fontSize: "28px" }}>✓</div>
+
+                  <strong
+                    style={{
+                      color: "var(--lime)",
+                      fontSize: "15px",
+                    }}
+                  >
+                    All Current Findings Addressed
+                  </strong>
+
+                  <p
+                    className="muted"
+                    style={{
+                      fontSize: "12px",
+                      marginTop: "4px",
+                    }}
+                  >
+                    The listed findings have been resolved or
+                    dismissed. Run a fresh audit before treating
+                    this asset as compliant.
+                  </p>
+
+                  {nextUnclearedAsset && (
+                    <button
+                      onClick={() =>
+                        handleSwitchBulkAsset(nextUnclearedAsset)
+                      }
                       className="primary-button"
                       style={{
                         marginTop: "12px",
                         background: "var(--lime)",
                         color: "#080a1c",
                         fontWeight: 800,
-                        fontSize: "13px",
-                        padding: "8px 20px",
                       }}
                     >
-                      🚀 Audit Next Collateral in Queue ({nextUnclearedAsset.name}) →
+                      Audit Next Asset in Queue →
                     </button>
                   )}
                 </div>
               ) : activeFinding ? (
                 <>
                   <div
-                    className="magic-fix-heading"
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: "12px",
+                      gap: "8px",
+                      flexWrap: "wrap",
+                    }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span style={{ fontSize: "16px" }}>🪄</span>
-                      <span style={{ fontWeight: 800, fontSize: "14px", color: "var(--cyan)" }}>
-                        Magic Fix for Marker #{activeFinding.markerId}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                      }}
+                    >
+                      <span>🪄</span>
+                      <span
+                        style={{
+                          fontWeight: 800,
+                          fontSize: "14px",
+                          color: "var(--cyan)",
+                        }}
+                      >
+                        Review Finding #{activeFinding.markerId}
                       </span>
                     </div>
+
                     <span
-                      className={`pill ${
-                        activeFinding.severity === "high"
-                          ? "legend-high"
-                          : activeFinding.severity === "medium"
-                          ? "legend-medium"
-                          : "legend-low"
-                      }`}
+                      className="pill legend-high"
                       style={{ fontSize: "10px" }}
                     >
-                      {activeFinding.severity.toUpperCase()} RISK • {activeFinding.evidence}
+                      {activeFinding.severity.toUpperCase()} RISK
+                      {activeFinding.page
+                        ? ` • PAGE ${activeFinding.page}`
+                        : ""}
                     </span>
                   </div>
 
-                  {/* 1. Exact Element Location */}
                   <div
                     style={{
                       background: "rgba(18, 196, 212, 0.08)",
-                      border: "1px solid rgba(18, 196, 212, 0.25)",
+                      border:
+                        "1px solid rgba(18, 196, 212, 0.25)",
                       borderRadius: "8px",
                       padding: "8px 12px",
                       marginBottom: "12px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
                       fontSize: "12px",
                     }}
                   >
-                    <span style={{ color: "var(--cyan)", fontWeight: 800 }}>
-                      {isImageMode ? "📍 VISUAL AD ELEMENT:" : "📍 DOCUMENT SECTION:"}
+                    <strong style={{ color: "var(--cyan)" }}>
+                      📍 ELEMENT:{" "}
+                    </strong>
+
+                    <span style={{ color: "#ffffff" }}>
+                      {activeFinding.location ||
+                        `Marker #${activeFinding.markerId}`}
+                      {activeFinding.page
+                        ? ` (Page ${activeFinding.page})`
+                        : ""}
+                      {activeFinding.pinX != null &&
+                      activeFinding.pinY != null &&
+                      activeFinding.pinX >= 0 &&
+                      activeFinding.pinX <= 100 &&
+                      activeFinding.pinY >= 0 &&
+                      activeFinding.pinY <= 100
+                        ? ` • Pin: (${activeFinding.pinX}%, ${activeFinding.pinY}%)`
+                        : " • Exact visual pin unavailable"}
                     </span>
-                    <span style={{ color: "#ffffff", fontWeight: 600 }}>
-                      {isImageMode
-                        ? activeFinding.location || `Marker #${activeFinding.markerId}`
-                        : `Page ${activeFinding.page} • Paragraph Marker #${activeFinding.markerId}`}
-                    </span>
-                    {isImageMode && activeFinding.image_action && (
-                      <span style={{ marginLeft: "auto", fontSize: "11px", color: "#94a3b8" }}>
-                        ({activeFinding.image_action})
-                      </span>
-                    )}
                   </div>
 
-                  {/* 2. Flagged Writing */}
                   <div style={{ marginBottom: "12px" }}>
-                    <span className="magic-fix-label" style={{ color: "#ef4444" }}>
-                      📝 {isImageMode ? "FLAGGED COPY IN CREATIVE:" : "FLAGGED STATEMENT IN DOCUMENT:"}
+                    <span
+                      className="magic-fix-label"
+                      style={{ color: "#ef4444" }}
+                    >
+                      📝 FLAGGED COPY:
                     </span>
+
                     <div
                       style={{
                         background: "rgba(239, 68, 68, 0.08)",
-                        border: "1px solid rgba(239, 68, 68, 0.3)",
+                        border:
+                          "1px solid rgba(239, 68, 68, 0.3)",
                         borderRadius: "8px",
                         padding: "10px 14px",
-                        marginTop: "4px",
                         color: "#ff987e",
                         fontSize: "13px",
                         fontWeight: 700,
-                        lineHeight: "1.5",
+                        overflowWrap: "anywhere",
                       }}
                     >
-                      "{activeFinding.flagged_text}"
+                      {activeFinding.flagged_text || (
+                        <span>
+                          This is a missing-content finding, not a quoted phrase.
+                          Add the required wording to the document and run the review again.
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* 3. What is Wrong */}
                   <div style={{ marginBottom: "12px" }}>
-                    <span className="magic-fix-label" style={{ color: "#f87171" }}>
-                      ❌ WHAT IS WRONG (REGULATORY VIOLATION):
+                    <span
+                      className="magic-fix-label"
+                      style={{ color: "#f87171" }}
+                    >
+                      ❌ EXPLANATION:
                     </span>
+
                     <div
                       style={{
                         background: "rgba(239, 68, 68, 0.06)",
                         borderLeft: "3px solid #ef4444",
                         padding: "10px 14px",
-                        marginTop: "4px",
                         color: "#e2e8f0",
                         fontSize: "12px",
                         lineHeight: "1.6",
-                        borderRadius: "0 8px 8px 0",
                       }}
                     >
-                      {activeFinding.explanation}
+                      {activeFinding.explanation ||
+                        "No explanation was supplied by the audit."}
                     </div>
                   </div>
 
-                  {/* 4. What is Right */}
-                  <div style={{ marginBottom: "14px" }}>
-                    <span className="magic-fix-label" style={{ color: "var(--lime)" }}>
-                      ✅ WHAT IS RIGHT (APPROVED REPLACEMENT COPY):
+                  <div style={{ marginBottom: "12px" }}>
+                    <span
+                      className="magic-fix-label"
+                      style={{ color: "var(--cyan)" }}
+                    >
+                      📚 EVIDENCE:
                     </span>
+
+                    <div
+                      style={{
+                        background: "rgba(18, 196, 212, 0.06)",
+                        border:
+                          "1px solid rgba(18, 196, 212, 0.25)",
+                        borderRadius: "8px",
+                        padding: "10px 14px",
+                        color: "#e2e8f0",
+                        fontSize: "12px",
+                        lineHeight: "1.6",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {activeFinding.evidence ||
+                        "No supporting evidence was supplied."}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: "14px" }}>
+                    <span
+                      className="magic-fix-label"
+                      style={{ color: "var(--lime)" }}
+                    >
+                      ✨ AI-PROPOSED REPLACEMENT:
+                    </span>
+
                     <div
                       style={{
                         background: "rgba(198, 244, 91, 0.1)",
-                        border: "1px solid rgba(198, 244, 91, 0.4)",
+                        border:
+                          "1px solid rgba(198, 244, 91, 0.4)",
                         borderRadius: "8px",
                         padding: "10px 14px",
-                        marginTop: "4px",
                         color: "var(--lime)",
                         fontSize: "13px",
                         fontWeight: 700,
-                        lineHeight: "1.5",
-                        boxShadow: "0 0 12px rgba(198, 244, 91, 0.15)",
+                        overflowWrap: "anywhere",
                       }}
                     >
-                      "{activeFinding.suggested_fix}"
+                      {activeFinding.suggestion_status === "suggestion_ready" &&
+                      activeFinding.suggested_fix
+                        ? activeFinding.suggested_fix
+                        : "No replacement has been generated for this finding."}
                     </div>
+                    {activeFinding.suggestion_status === "suggestion_ready" && (
+                      <div
+                        style={{
+                          marginTop: "8px",
+                          color: "#cbd5e1",
+                          fontSize: "12px",
+                          lineHeight: "1.5",
+                        }}
+                      >
+                        <div>{activeFinding.suggestion_explanation}</div>
+                        {activeFinding.suggestion_change_summary && (
+                          <div style={{ marginTop: "4px" }}>
+                            Change: {activeFinding.suggestion_change_summary}
+                          </div>
+                        )}
+                        <strong style={{ display: "block", marginTop: "5px" }}>
+                          Apply AI Suggestion replaces the flagged copy with this wording.
+                        </strong>
+                      </div>
+                    )}
+                    {activeFinding.suggestion_status === "needs_information" && (
+                      <div
+                        role="status"
+                        style={{ marginTop: "8px", color: "#fbbf24", fontSize: "12px" }}
+                      >
+                        <div>{activeFinding.suggestion_explanation}</div>
+                        {activeFinding.suggestion_missing_information.length > 0 && (
+                          <ul style={{ margin: "6px 0 0", paddingLeft: "18px" }}>
+                            {activeFinding.suggestion_missing_information.map((item, index) => (
+                              <li key={`${activeFinding.id}-missing-${index}`}>{item}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                    {activeFinding.suggestion_status === "no_safe_replacement" && (
+                      <div
+                        role="status"
+                        style={{ marginTop: "8px", color: "#fbbf24", fontSize: "12px" }}
+                      >
+                        {activeFinding.suggestion_explanation}
+                        {activeFinding.suggestion_missing_information.length > 0 && (
+                          <ul style={{ margin: "6px 0 0", paddingLeft: "18px" }}>
+                            {activeFinding.suggestion_missing_information.map((item, index) => (
+                              <li key={`${activeFinding.id}-required-${index}`}>{item}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                    {suggestionLoading[activeFinding.id] && (
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        style={{ marginTop: "8px", color: "var(--cyan)", fontSize: "12px" }}
+                      >
+                        Generating and validating a context-aware suggestion…
+                      </div>
+                    )}
+                    {suggestionFailures[activeFinding.id] && (
+                      <div
+                        role="alert"
+                        style={{ marginTop: "8px", color: "#fca5a5", fontSize: "12px" }}
+                      >
+                        {suggestionFailures[activeFinding.id].status === "invalid_suggestion"
+                          ? "The suggestion could not be validated. "
+                          : "Suggestion generation failed. "}
+                        {suggestionFailures[activeFinding.id].message}
+                      </div>
+                    )}
                   </div>
 
-                  {isEditingManually ? (
+                  {isEditingManually && (
                     <div style={{ marginBottom: "14px" }}>
+                      <span
+                        className="magic-fix-label"
+                        style={{ color: "var(--lime)" }}
+                      >
+                        {activeFinding.suggestion_status === "suggestion_ready"
+                          ? "✍️ REVIEW & CONFIRM AI SUGGESTION:"
+                            : activeFinding.suggestion_draft
+                              ? "✍️ REVIEW & EDIT AI DRAFT:"
+                              : "✍️ ENTER A MANUAL REPLACEMENT:"}
+                        </span>
+                        {activeFinding.suggestion_status !== "suggestion_ready" && (
+                        <p
+                          style={{
+                            margin: "4px 0 8px",
+                            color: "#fbbf24",
+                            fontSize: "12px",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                            {activeFinding.suggestion_draft
+                              ? "This AI draft did not pass all deterministic checks. Review or edit it; it must pass the active rules before it can be applied."
+                              : "No AI draft is available. Enter a candidate here; it will be checked against the active rules before it can be applied."}
+                          </p>
+                        )}
                       <textarea
                         value={manualText}
-                        onChange={(e) => setManualText(e.target.value)}
-                        placeholder="Type compliant copy..."
+                        onChange={(event) =>
+                          setManualText(event.target.value)
+                        }
+                        placeholder={
+                          activeFinding.suggestion_status === "suggestion_ready" ||
+                          activeFinding.suggestion_draft
+                            ? "Review or edit the AI suggestion, then confirm to update the advertisement."
+                            : "Enter a replacement for review and rule validation."
+                        }
+                        autoFocus
                         rows={3}
                         style={{
                           width: "100%",
-                          boxSizing: "border-box",
                           background: "#080a1c",
                           border: "1px solid var(--border)",
                           borderRadius: "8px",
                           padding: "10px",
                           color: "#fff",
-                          fontSize: "13px",
                         }}
                       />
-                      <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "8px",
+                          marginTop: "8px",
+                        }}
+                      >
                         <button
                           className="primary-button"
-                          onClick={() => handleSaveManualEdit(activeFinding.id)}
-                          style={{ minHeight: "32px", fontSize: "12px" }}
+                          disabled={
+                            Boolean(fixSaving[activeFinding.id]) ||
+                            !manualText.trim()
+                          }
+                          onClick={() =>
+                            handleSaveManualEdit(activeFinding.id)
+                          }
                         >
-                          Save Edit
+                          {fixSaving[activeFinding.id]
+                            ? "Applying..."
+                            : "Confirm"}
                         </button>
+
                         <button
                           className="secondary-button"
-                          onClick={() => setIsEditingManually(false)}
-                          style={{ minHeight: "32px", fontSize: "12px" }}
+                          onClick={() => {
+                            setIsEditingManually(false);
+                            setManualText("");
+                          }}
                         >
                           Cancel
                         </button>
                       </div>
                     </div>
-                  ) : null}
+                  )}
 
-                  {/* Actions Bar */}
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "8px",
+                    }}
+                  >
                     <button
                       className="primary-button"
-                      onClick={() => handleApplyFix(activeFinding.id)}
+                      disabled={
+                        Boolean(fixSaving[activeFinding.id]) ||
+                        Boolean(suggestionLoading[activeFinding.id]) ||
+                        isEditingManually ||
+                        !activeFinding.flagged_text.trim()
+                      }
+                      onClick={() =>
+                        void handleApplyAiSuggestion(activeFinding.id)
+                      }
                       style={{
-                        minHeight: "36px",
-                        fontSize: "12px",
                         background: "var(--lime)",
                         color: "#080a1c",
                         fontWeight: 800,
                       }}
                     >
-                      <Sparkles size={14} style={{ marginRight: 6 }} /> Apply Surgical Replacement
+                      <Sparkles
+                        size={14}
+                        style={{ marginRight: 6 }}
+                      />
+                      {suggestionLoading[activeFinding.id]
+                        ? "Generating & applying…"
+                        : fixSaving[activeFinding.id]
+                          ? "Applying…"
+                          : "Apply AI Suggestion"}
                     </button>
+
                     <button
                       className="secondary-button"
+                      disabled={
+                        Boolean(fixSaving[activeFinding.id]) ||
+                        Boolean(suggestionLoading[activeFinding.id]) ||
+                        !activeFinding.flagged_text.trim()
+                      }
                       onClick={() => {
-                        setManualText(activeFinding.suggested_fix);
+                        setManualText(
+                          activeFinding.suggestion_status === "suggestion_ready"
+                            ? activeFinding.suggested_fix
+                            : activeFinding.suggestion_draft
+                        );
                         setIsEditingManually(true);
                       }}
-                      style={{ minHeight: "36px", fontSize: "12px" }}
                     >
-                      <Edit3 size={14} style={{ marginRight: 6 }} /> Manual Edit
+                      <Edit3
+                        size={14}
+                        style={{ marginRight: 6 }}
+                      />
+                      Manual Edit
                     </button>
+
                     <button
                       className="secondary-button"
-                      onClick={() => handleIgnoreOnce(activeFinding.id)}
-                      style={{ minHeight: "36px", fontSize: "12px" }}
+                      disabled={
+                        Boolean(fixSaving[activeFinding.id]) ||
+                        Boolean(suggestionLoading[activeFinding.id])
+                      }
+                      onClick={() => void handleIgnoreOnce(activeFinding.id)}
                     >
-                      <EyeOff size={14} style={{ marginRight: 6 }} /> Ignore Once
+                      <EyeOff
+                        size={14}
+                        style={{ marginRight: 6 }}
+                      />
+                      {fixSaving[activeFinding.id] ? "Saving decision…" : "Dismiss Finding"}
                     </button>
+
                     <button
                       className="secondary-button"
-                      onClick={() => handleIgnoreAll(activeFinding)}
-                      style={{ minHeight: "36px", fontSize: "12px" }}
+                      disabled={
+                        Boolean(fixSaving[activeFinding.id]) ||
+                        Boolean(suggestionLoading[activeFinding.id])
+                      }
+                      onClick={() => void handleIgnoreAll(activeFinding)}
                     >
-                      Ignore All
+                      {fixSaving[activeFinding.id] ? "Saving decision…" : "Dismiss Matching Findings"}
                     </button>
+
                     <button
                       className="secondary-button"
                       onClick={() => handleAskAi(activeFinding)}
-                      disabled={aiLoading[activeFinding.id]}
-                      style={{ minHeight: "36px", fontSize: "12px", borderColor: "var(--cyan)", color: "var(--cyan)" }}
+                      disabled={
+                        Boolean(aiLoading[activeFinding.id])
+                      }
+                      style={{
+                        borderColor: "var(--cyan)",
+                        color: "var(--cyan)",
+                      }}
                     >
-                      {aiLoading[activeFinding.id] ? "Analyzing..." : "🤖 Ask AI"}
+                      {aiLoading[activeFinding.id]
+                        ? "Analyzing..."
+                        : "🤖 Ask AI"}
                     </button>
                   </div>
 
-                  {(aiChats[activeFinding.id] ?? []).map((turn, i) =>
-                    turn.role === "user" ? (
-                      <p key={i} style={{ margin: "10px 0 0", fontSize: "11px", color: "var(--muted)", fontStyle: "italic" }}>
-                        You asked: {turn.text}
-                      </p>
-                    ) : (
+                  {(aiChats[activeFinding.id] ?? []).map(
+                    (turn, index) => (
                       <div
-                        key={i}
+                        key={index}
                         style={{
-                          marginTop: "6px",
+                          marginTop: "8px",
                           background: "rgba(18, 196, 212, 0.08)",
                           border: "1px solid var(--cyan)",
                           borderRadius: "8px",
                           padding: "10px 14px",
                           fontSize: "12px",
                           color: "#e2e8f0",
-                          lineHeight: "1.6",
+                          overflowWrap: "anywhere",
                           whiteSpace: "pre-wrap",
                         }}
                       >
-                        <strong style={{ color: "var(--cyan)", display: "block", marginBottom: "4px" }}>
-                          Gemini Regulatory Reasoning:
+                        <strong
+                          style={{
+                            color: "var(--cyan)",
+                            display: "block",
+                            marginBottom: "4px",
+                          }}
+                        >
+                          {turn.role === "user"
+                            ? "You asked:"
+                            : "AI response:"}
                         </strong>
                         {turn.text}
                       </div>
                     )
                   )}
 
-                  {(aiChats[activeFinding.id] ?? []).length > 0 && (
-                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
-                      {["Explain that more simply", "Give a concrete example", "Make it shorter"].map((p) => (
-                        <button
-                          key={p}
-                          className="secondary-button"
-                          disabled={aiLoading[activeFinding.id]}
-                          onClick={() => handleAskAi(activeFinding, p)}
-                          style={{ minHeight: "28px", fontSize: "11px" }}
-                        >
-                          {p}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  <div style={{ display: "flex", gap: "6px", marginTop: "10px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "6px",
+                      marginTop: "10px",
+                    }}
+                  >
                     <input
                       type="text"
                       value={aiInputs[activeFinding.id] ?? ""}
-                      onChange={(e) => setAiInputs((prev) => ({ ...prev, [activeFinding.id]: e.target.value }))}
-                      onKeyDown={(e) => e.key === "Enter" && handleAskAi(activeFinding, aiInputs[activeFinding.id] ?? "")}
-                      placeholder={(aiChats[activeFinding.id] ?? []).length ? "Ask a follow-up, e.g. explain it more simply..." : "Ask anything about this finding..."}
-                      style={{ flex: 1, padding: "8px 12px", borderRadius: "8px", background: "var(--bg)", border: "1px solid var(--border)", color: "#fff", fontSize: "12px", outline: "none" }}
+                      onChange={(event) =>
+                        setAiInputs((previous) => ({
+                          ...previous,
+                          [activeFinding.id]: event.target.value,
+                        }))
+                      }
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" &&
+                          !event.shiftKey
+                        ) {
+                          event.preventDefault();
+                          handleAskAi(
+                            activeFinding,
+                            aiInputs[activeFinding.id] ?? ""
+                          );
+                        }
+                      }}
+                      placeholder="Ask a compliance follow-up..."
+                      style={{
+                        flex: 1,
+                        padding: "8px 12px",
+                        borderRadius: "8px",
+                        background: "var(--bg)",
+                        border: "1px solid var(--border)",
+                        color: "#fff",
+                        fontSize: "12px",
+                      }}
                     />
+
                     <button
                       className="secondary-button"
-                      disabled={aiLoading[activeFinding.id]}
-                      onClick={() => handleAskAi(activeFinding, aiInputs[activeFinding.id] ?? "")}
-                      style={{ minHeight: "34px", fontSize: "12px", borderColor: "var(--cyan)", color: "var(--cyan)" }}
+                      disabled={
+                        Boolean(aiLoading[activeFinding.id]) ||
+                        !(aiInputs[activeFinding.id] ?? "").trim()
+                      }
+                      onClick={() =>
+                        handleAskAi(
+                          activeFinding,
+                          aiInputs[activeFinding.id] ?? ""
+                        )
+                      }
+                      style={{
+                        borderColor: "var(--cyan)",
+                        color: "var(--cyan)",
+                      }}
                     >
                       Send
                     </button>
                   </div>
                 </>
-              ) : null}
+              ) : (
+                <div
+                  style={{
+                    padding: "20px",
+                    textAlign: "center",
+                    color: "#94a3b8",
+                  }}
+                >
+                  Select a finding to review it.
+                </div>
+              )}
             </div>
           </div>
 
-          {/* ========================================================================= */}
-          {/* RIGHT: UPDATED ADVERTISEMENT / CLEAN SPECIFICATION PREVIEW */}
-          {/* ========================================================================= */}
+          {/* Right: updated specification and preview */}
           <div className="review-document-workspace">
             <div className="updated-ad-card">
               <div
                 className="creative-topline"
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
               >
                 <span>
-                  {isImageMode
-                    ? "UPDATED ADVERTISEMENT & REVISED CREATIVE"
-                    : "UPDATED ADVERTISEMENT & SPECIFICATIONS"}
+                  UPDATED ADVERTISEMENT &amp; REVISED SPECIFICATIONS
                 </span>
+
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button
                     className="icon-button"
                     onClick={handleCopy}
-                    title="Copy Specifications"
                     style={{
-                      background: "transparent",
                       border: "1px solid var(--border)",
                       color: "#94a3b8",
                       borderRadius: "6px",
                       padding: "4px 8px",
                       cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
                       fontSize: "11px",
                     }}
                   >
                     <Copy size={12} /> Copy
                   </button>
+
                   <button
                     className="icon-button"
                     onClick={handleDownload}
-                    title="Download Clean Copy"
                     style={{
-                      background: "var(--surface)",
                       border: "1px solid var(--border)",
                       color: "var(--cyan)",
                       borderRadius: "6px",
                       padding: "4px 8px",
                       cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
                       fontSize: "11px",
                       fontWeight: 700,
                     }}
@@ -1713,238 +3189,116 @@ export default function Review({ content, setContent }: ReviewProps) {
                 </div>
               </div>
 
-              {/* View Switcher for Image Mode */}
-              {isImageMode && (
-                <div
-                  style={{
-                    display: "flex",
-                    borderBottom: "1px solid var(--border)",
-                    background: "#080a1c",
-                    padding: "6px 12px",
-                    gap: "8px",
-                  }}
-                >
-                  <button
-                    onClick={() => setPreviewTab("image")}
-                    style={{
-                      background: previewTab === "image" ? "#171b35" : "transparent",
-                      border: previewTab === "image" ? "1px solid #12c4d4" : "none",
-                      color: previewTab === "image" ? "#12c4d4" : "#94a3b8",
-                      borderRadius: "6px",
-                      padding: "4px 12px",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    🖼️ Visual Ad Creative Preview
-                  </button>
-                  <button
-                    onClick={() => setPreviewTab("specs")}
-                    style={{
-                      background: previewTab === "specs" ? "#171b35" : "transparent",
-                      border: previewTab === "specs" ? "1px solid #12c4d4" : "none",
-                      color: previewTab === "specs" ? "#12c4d4" : "#94a3b8",
-                      borderRadius: "6px",
-                      padding: "4px 12px",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    📋 Designer Spec Sheet
-                  </button>
-                </div>
-              )}
-
-              {/* Card Body */}
-              <div style={{ padding: "20px", maxHeight: "560px", overflowY: "auto" }}>
-                {isImageMode && previewTab === "image" && imageUrl ? (
+              <div
+                style={{
+                  padding: "20px",
+                  maxHeight: "560px",
+                  overflowY: "auto",
+                }}
+              >
+                {isImageMode && imageUrl ? (
                   <div>
-                    <div
+                    <img
+                      src={imageUrl}
+                      alt="Marketing asset preview"
                       style={{
-                        position: "relative",
-                        borderRadius: "10px",
-                        overflow: "hidden",
-                        border: "1px solid var(--border)",
-                        background: "#080a1c",
+                        width: "100%",
+                        maxHeight: "240px",
+                        objectFit: "contain",
+                        borderRadius: "8px",
                         marginBottom: "16px",
                       }}
-                    >
-                      <img
-                        src={imageUrl}
-                        alt="Revised Marketing Asset"
-                        style={{
-                          width: "100%",
-                          maxHeight: "260px",
-                          objectFit: "contain",
-                          display: "block",
-                          opacity: allPageResolved ? 1 : 0.9,
-                        }}
-                      />
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: 10,
-                          right: 10,
-                          background: allPageResolved ? "var(--lime)" : "rgba(18, 196, 212, 0.95)",
-                          color: "#080a1c",
-                          fontSize: "11px",
-                          fontWeight: 800,
-                          padding: "4px 10px",
-                          borderRadius: "6px",
-                          boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
-                        }}
-                      >
-                        {allPageResolved ? "✓ COMPLIANCE CLEARED" : "🔄 REVISIONS PENDING"}
-                      </div>
-                    </div>
+                    />
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                      {pageFindings.map((f) => (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "10px",
+                      }}
+                    >
+                      {pageFindings.map((finding) => (
                         <div
-                          key={f.id}
+                          key={finding.id}
                           style={{
-                            background: f.status === "resolved" ? "rgba(198, 244, 91, 0.08)" : "#101329",
-                            border:
-                              f.status === "resolved"
-                                ? "1px solid rgba(198, 244, 91, 0.4)"
-                                : "1px solid var(--border)",
+                            background:
+                              finding.status === "resolved"
+                                ? "rgba(198, 244, 91, 0.08)"
+                                : "#101329",
+                            border: "1px solid var(--border)",
                             borderRadius: "8px",
                             padding: "10px 14px",
                           }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <strong style={{ fontSize: "12px", color: "#ffffff" }}>
-                              Marker #{f.markerId}: {f.location}
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: "8px",
+                            }}
+                          >
+                            <strong
+                              style={{
+                                fontSize: "12px",
+                                color: "#fff",
+                              }}
+                            >
+                              Marker #{finding.markerId}:{" "}
+                              {finding.location ||
+                                "Location not specified"}
                             </strong>
+
                             <span
                               style={{
                                 fontSize: "10px",
                                 fontWeight: 800,
-                                color: f.status === "resolved" ? "var(--lime)" : "#f59e0b",
+                                color:
+                                  finding.status === "resolved"
+                                    ? "var(--lime)"
+                                    : finding.status === "dismissed"
+                                      ? "#94a3b8"
+                                      : "#f59e0b",
                               }}
                             >
-                              {f.status === "resolved" ? "✓ APPROVED" : "PENDING ACTION"}
+                              {finding.status === "resolved"
+                                ? "✓ ADDRESSED"
+                                : finding.status === "dismissed"
+                                  ? "DISMISSED"
+                                  : "OPEN"}
                             </span>
                           </div>
-                          <div style={{ fontSize: "12px", color: "var(--lime)", marginTop: "4px", fontWeight: 700 }}>
-                            "{f.suggested_fix}"
-                          </div>
-                          <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
-                            Citation: {f.evidence}
+
+                          <div
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--lime)",
+                              marginTop: "4px",
+                              fontWeight: 700,
+                              overflowWrap: "anywhere",
+                            }}
+                          >
+                            {finding.suggested_fix ||
+                              "No replacement suggested"}
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
-                ) : isImageMode && previewTab === "specs" ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                    <div style={{ fontSize: "13px", color: "#94a3b8" }}>
-                      Production Hand-off Specifications for Design Team:
-                    </div>
-                    {pageFindings.map((f) => (
-                      <div
-                        key={f.id}
-                        style={{
-                          background: "#080a1c",
-                          border: "1px solid var(--border)",
-                          borderRadius: "8px",
-                          padding: "12px",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                          <span style={{ color: "var(--cyan)", fontWeight: 800, fontSize: "12px" }}>
-                            Marker #{f.markerId} • {f.location}
-                          </span>
-                          <span style={{ fontSize: "11px", color: "#94a3b8" }}>{f.image_action}</span>
-                        </div>
-                        <div style={{ fontSize: "12px", color: "#ef4444", marginBottom: "4px" }}>
-                          Flagged: "{f.flagged_text}"
-                        </div>
-                        <div style={{ fontSize: "12px", color: "var(--lime)", fontWeight: 700 }}>
-                          Approved: "{f.suggested_fix}"
-                        </div>
-                      </div>
-                    ))}
-                  </div>
                 ) : (
-                  <div>
-                    <div
-                      style={{
-                        fontSize: "12px",
-                        color: "#94a3b8",
-                        marginBottom: "12px",
-                        display: "flex",
-                        justifyContent: "space-between",
-                      }}
-                    >
-                      <span>
-                        Active Inspection:{" "}
-                        <strong>
-                          {totalPages > 1 ? `Page ${currentPage} of ${totalPages}` : "Single-Page Document"}
-                        </strong>
-                      </span>
-                      <span>{openPageFindings.length} open issues on this page</span>
-                    </div>
-
-                    <div
-                      style={{
-                        background: "#080a1c",
-                        border: "1px solid var(--border)",
-                        borderRadius: "10px",
-                        padding: "18px",
-                        color: "#f8fafc",
-                        fontSize: "14px",
-                        lineHeight: "2",
-                        whiteSpace: "pre-line",
-                      }}
-                    >
-                      {activePageText}
-                    </div>
-
-                    <div style={{ marginTop: "18px" }}>
-                      <strong style={{ fontSize: "13px", color: "#ffffff", display: "block", marginBottom: "8px" }}>
-                        {totalPages > 1 ? `Page ${currentPage} Regulatory Audit Status:` : "Document Audit Status:"}
-                      </strong>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                        {pageFindings.map((item) => (
-                          <div
-                            key={item.id}
-                            style={{
-                              background: item.status === "resolved" ? "rgba(198, 244, 91, 0.08)" : "#101329",
-                              border:
-                                item.status === "resolved"
-                                  ? "1px solid rgba(198, 244, 91, 0.4)"
-                                  : "1px solid var(--border)",
-                              borderRadius: "8px",
-                              padding: "8px 12px",
-                              fontSize: "12px",
-                            }}
-                          >
-                            <div style={{ display: "flex", justifyContent: "space-between" }}>
-                              <span style={{ fontWeight: 700, color: "#fff" }}>
-                                Marker #{item.markerId} ({item.severity.toUpperCase()} RISK)
-                              </span>
-                              <span
-                                style={{
-                                  color: item.status === "resolved" ? "var(--lime)" : "#f59e0b",
-                                  fontWeight: 700,
-                                }}
-                              >
-                                {item.status === "resolved" ? "✓ RESOLVED" : "OPEN"}
-                              </span>
-                            </div>
-                            <div style={{ color: "#94a3b8", marginTop: "3px" }}>
-                              "{item.flagged_text}" →{" "}
-                              <span style={{ color: "var(--lime)", fontWeight: 600 }}>
-                                "{item.suggested_fix}"
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                  <div
+                    style={{
+                      background: "#080a1c",
+                      border: "1px solid var(--border)",
+                      borderRadius: "10px",
+                      padding: "18px",
+                      color: "#f8fafc",
+                      fontSize: "14px",
+                      lineHeight: "2",
+                      whiteSpace: "pre-line",
+                    }}
+                  >
+                    {activePageText ||
+                      "No extracted document text is available."}
                   </div>
                 )}
               </div>
@@ -1953,15 +3307,12 @@ export default function Review({ content, setContent }: ReviewProps) {
         </div>
       )}
 
-      {/* Fullscreen Theater Modal */}
+      {/* Fullscreen preview */}
       {isFullscreen && (
         <div
           style={{
             position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100vw",
-            height: "100vh",
+            inset: 0,
             background: "rgba(3, 7, 18, 0.95)",
             zIndex: 9999,
             display: "flex",
@@ -1977,18 +3328,24 @@ export default function Review({ content, setContent }: ReviewProps) {
               marginBottom: "20px",
             }}
           >
-            <span style={{ color: "#12c4d4", fontWeight: 800, fontSize: "16px" }}>
-              ⛶ THEATER MODE • {docTitle.toUpperCase()}{" "}
-              {totalPages > 1 ? `(PAGE ${currentPage} OF ${totalPages})` : ""}
+            <span
+              style={{
+                color: "#12c4d4",
+                fontWeight: 800,
+                fontSize: "16px",
+              }}
+            >
+              ⛶ THEATER MODE • {docTitle.toUpperCase()}
             </span>
+
             <button
               onClick={() => setIsFullscreen(false)}
               className="primary-button"
-              style={{ minHeight: "36px", padding: "6px 20px" }}
             >
               ✕ Close Fullscreen
             </button>
           </div>
+
           <div
             style={{
               flex: 1,
@@ -2003,7 +3360,21 @@ export default function Review({ content, setContent }: ReviewProps) {
               whiteSpace: "pre-line",
             }}
           >
-            {activePageText}
+            {isImageMode && imageUrl ? (
+              <img
+                src={imageUrl}
+                alt="Fullscreen marketing asset"
+                style={{
+                  display: "block",
+                  maxWidth: "100%",
+                  maxHeight: "100%",
+                  objectFit: "contain",
+                  margin: "0 auto",
+                }}
+              />
+            ) : (
+              originalPageText
+            )}
           </div>
         </div>
       )}

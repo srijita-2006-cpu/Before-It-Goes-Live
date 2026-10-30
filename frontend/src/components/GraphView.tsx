@@ -113,476 +113,6 @@ function getContextualVisual(text: string, type: "fact" | "claim" | "collateral"
   };
 }
 
-// Page-specific contextual profiles for multi-page brochures
-const PAGE_SPECIFIC_PROFILES: {
-  [pageNum: number]: {
-    claims: { text: string; sev: "high" | "medium" | "low"; exp: string }[];
-    facts: { title: string; subtitle: string; relation: "contradicts" | "outdated" | "no source" }[];
-    collateral: { title: string; subtitle: string }[];
-  };
-} = {
-  1: {
-    claims: [
-      {
-        text: "Everyday Skincare, Thoughtfully Made",
-        sev: "high",
-        exp: "Unqualified superlative and broad efficacy promise violates FTC §5 advertising guidelines.",
-      },
-      {
-        text: "simple skincare essentials for everyday routines",
-        sev: "medium",
-        exp: "Puffery claim lacks clinical formulation substantiation and consumer patch test records.",
-      },
-      {
-        text: "comfortable textures, thoughtful ingredients",
-        sev: "low",
-        exp: "Ingredient specification claim requires Certificate of Analysis (COA) audit verification.",
-      },
-    ],
-    facts: [
-      {
-        title: "Brand Rulebook §4.2: Banned Absolutes",
-        subtitle: "RULE: Absolute efficacy promises or unverified superlatives are legally prohibited under FTC §5 and FDA guidelines.",
-        relation: "contradicts",
-      },
-      {
-        title: "Clinical Formulation Protocol Dossier #2024-B",
-        subtitle: "CLINICAL STUDY: Renewal protocol validated at 28 days only. Unsubstantiated claims affect campaign assets.",
-        relation: "outdated",
-      },
-      {
-        title: "Cosmetic Ingredient Review (CIR) Master Spec",
-        subtitle: "BENCHMARK: Botanical and organic declarations must match audited bill of materials and USDA standards.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Social Media Hero Ad Flights (3 Ads)",
-        subtitle: "Live paid media hero creatives reflect Page 1 copy. Requires immediate marketing flight update.",
-      },
-      {
-        title: "Global Campaign Launch Collateral",
-        subtitle: "Press releases and brand deck collateral mirror Page 1 claims.",
-      },
-    ],
-  },
-  2: {
-    claims: [
-      {
-        text: "Gentle Brightening Face Wash with deep pore action",
-        sev: "high",
-        exp: "Deep pore and brightening claim requires active percentage substantiation of niacinamide or Vitamin C.",
-      },
-      {
-        text: "formulated without harsh sulfates or parabens",
-        sev: "medium",
-        exp: "'Free-from' claims require audited supplier negative-testing verification under EU/FDA standards.",
-      },
-      {
-        text: "suitable for all skin types, including acne-prone",
-        sev: "low",
-        exp: "Universal suitability claim invites liability without non-comedogenic panel trials.",
-      },
-    ],
-    facts: [
-      {
-        title: "FDA Good Manufacturing Practice (GMP) Part 211",
-        subtitle: "REGULATION: Active brightening ingredient levels must be validated with stability testing data on file.",
-        relation: "contradicts",
-      },
-      {
-        title: "Dermatological Safety Panel Spec #CL-44",
-        subtitle: "SAFETY DOSSIER: Hypoallergenicity protocol completed on normal skin only; acne-prone claim unsupported.",
-        relation: "outdated",
-      },
-      {
-        title: "Clean Formulation Bill of Materials",
-        subtitle: "AUDIT SPEC: Certified sulfate-free testing records must be cross-referenced with batch packaging.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Primary Bottle Packaging Label (SKU #PG-101)",
-        subtitle: "Secondary carton and bottle print artwork contains this exact brightening claim.",
-      },
-      {
-        title: "Retailer E-Commerce Product Detail Page (PDP)",
-        subtitle: "Online marketplace listings must be synchronized before distribution.",
-      },
-    ],
-  },
-  3: {
-    claims: [
-      {
-        text: "24-hour deep moisture retention and barrier repair",
-        sev: "high",
-        exp: "Cellular 'barrier repair' is classified as an OTC drug claim under FDA 21 CFR §701.3.",
-      },
-      {
-        text: "infused with 100% natural plant squalane",
-        sev: "medium",
-        exp: "100% natural declaration requires USDA bio-based analytical certification.",
-      },
-      {
-        text: "instant non-greasy hydration after single application",
-        sev: "low",
-        exp: "Immediate efficacy claim requires corneometer hydration panel measurements within 15 minutes.",
-      },
-    ],
-    facts: [
-      {
-        title: "FDA Cosmetic vs Drug Classification Guide §701",
-        subtitle: "DRUG THRESHOLD: Cosmetic formulations cannot claim physiological skin barrier tissue reconstruction.",
-        relation: "contradicts",
-      },
-      {
-        title: "Clinical Corneometry Hydration Study #2024-C",
-        subtitle: "TIME MATRIX: Hydration curve measured up to 8 hours; 24-hour persistence claims lack protocol data.",
-        relation: "outdated",
-      },
-      {
-        title: "USDA Bio-Preferred Certification Register",
-        subtitle: "CERTIFICATION: Squalane raw material batch certificate missing organic chain-of-custody stamp.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Secondary Packaging Jar Carton (SKU #PG-102)",
-        subtitle: "Printed box artwork includes 'barrier repair' claim; subject to regulatory recall risk.",
-      },
-      {
-        title: "Retail POP In-Store Display Stands",
-        subtitle: "In-store shelf talkers and counter cards display the 24-hour moisture promise.",
-      },
-    ],
-  },
-  4: {
-    claims: [
-      {
-        text: "visibly restores radiance and reverses dullness in 7 days",
-        sev: "high",
-        exp: "Specific 7-day timeline claim requires double-blind clinical trial documentation on file.",
-      },
-      {
-        text: "10% stabilized Vitamin C and botanical actives",
-        sev: "medium",
-        exp: "Concentration disclosure must match audited laboratory formulation master batch.",
-      },
-      {
-        text: "consumer-tested on 150 diverse skin profiles",
-        sev: "low",
-        exp: "Consumer test cohort statistics must be accompanied by study date and sample demographics.",
-      },
-    ],
-    facts: [
-      {
-        title: "FTC Advertising Substantiation Doctrine §5",
-        subtitle: "LEGAL REQUIREMENT: Fixed timeline promises ('7 days') must possess competent scientific evidence.",
-        relation: "contradicts",
-      },
-      {
-        title: "Formulation Stability Study Dossier #VIT-C",
-        subtitle: "SPECIFICATION: Active Vitamin C oxidation threshold requires amber packaging disclosure.",
-        relation: "outdated",
-      },
-      {
-        title: "Consumer Perception Study Records (n=150)",
-        subtitle: "DOCUMENTATION: Demographic breakdown methodology missing from regulatory binder.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Influencer Video Brief & Paid TikTok Flight",
-        subtitle: "4 paid creator scripts mandate the 7-day radiance claim. Requires creator brief revision.",
-      },
-      {
-        title: "Email Marketing Teaser Sequence",
-        subtitle: "Scheduled campaign blast highlighted the 7-day turnaround claim.",
-      },
-    ],
-  },
-  5: {
-    claims: [
-      {
-        text: "dermatologist-approved 3-step morning routine",
-        sev: "high",
-        exp: "'Dermatologist approved' claims require signed specialist panel endorsements on file.",
-      },
-      {
-        text: "guaranteed radiant glow throughout the entire day",
-        sev: "medium",
-        exp: "Unqualified 'guaranteed' promise requires prominent money-back terms and conditions.",
-      },
-      {
-        text: "safe for daily long-term layering under makeup",
-        sev: "low",
-        exp: "Cosmetic compatibility claim lacks standardized cosmetic layering patch data.",
-      },
-    ],
-    facts: [
-      {
-        title: "FTC Endorsement Guides 16 CFR §255",
-        subtitle: "DISCLOSURE: Professional medical endorsements must reflect legitimate blind clinical reviews.",
-        relation: "contradicts",
-      },
-      {
-        title: "Magnuson-Moss Warranty Disclosure Act §102",
-        subtitle: "WARRANTY SPEC: Commercial guarantees must state exact refund or replacement stipulations.",
-        relation: "outdated",
-      },
-      {
-        title: "Brand Tone & Style Guide v4.1",
-        subtitle: "GUIDELINE: Vague puffery terms ('entire day') should be replaced with tested application intervals.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Digital Routine Guide PDF Download",
-        subtitle: "Website downloadable regimen brochure features the dermatologist approval badge.",
-      },
-      {
-        title: "Print Collateral Magazine Ad Inserts",
-        subtitle: "National beauty publication placements feature the 3-step routine graphic.",
-      },
-    ],
-  },
-  6: {
-    claims: [
-      {
-        text: "95% certified organic botanical extracts",
-        sev: "high",
-        exp: "Organic claims require explicit certification agency identification (e.g., USDA/COSMOS).",
-      },
-      {
-        text: "clean beauty formulation with zero artificial fragrances",
-        sev: "medium",
-        exp: "Puffery term 'clean beauty' requires specification of exact excluded chemical lists.",
-      },
-      {
-        text: "hypoallergenic, non-comedogenic certified formula",
-        sev: "low",
-        exp: "Non-comedogenic certification requires HRIPT (Human Repeat Insult Patch Test) validation.",
-      },
-    ],
-    facts: [
-      {
-        title: "USDA Organic Compliance Standard §205",
-        subtitle: "CERTIFICATION: Percentage organic labeling must carry certifying agent name and seal.",
-        relation: "contradicts",
-      },
-      {
-        title: "NAD Case Precedents: Clean Beauty Standards",
-        subtitle: "LEGAL PRECEDENT: Broad 'clean' claims deemed deceptive unless bounded by documented ingredient audits.",
-        relation: "outdated",
-      },
-      {
-        title: "HRIPT Human Clinical Patch Study #601",
-        subtitle: "TEST RECORD: 50-subject patch test report requires chief investigator countersignature.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Master Regulatory Dossier for Retail Buyers",
-        subtitle: "Sephora and Ulta buyer specification sheets list the 95% organic claim.",
-      },
-      {
-        title: "Direct-to-Consumer Packaging Seals",
-        subtitle: "Custom printed shipping boxes showcase the clean beauty seal.",
-      },
-    ],
-  },
-  7: {
-    claims: [
-      {
-        text: "98% of users reported smoother skin in 2 weeks",
-        sev: "high",
-        exp: "Quantitative survey statistics require explicit disclosure of respondent count and methodology.",
-      },
-      {
-        text: "voted #1 favorite clean skincare brand of 2024",
-        sev: "medium",
-        exp: "Superlative market ranking requires verifiable third-party consumer awards documentation.",
-      },
-      {
-        text: "statistically significant reduction in dryness",
-        sev: "low",
-        exp: "Scientific claim ('statistically significant') requires p-value statistical evidence on file.",
-      },
-    ],
-    facts: [
-      {
-        title: "FTC Testimonial & Survey Disclosure Standard §255",
-        subtitle: "SURVEY RULES: Consumer perception percentages must state exact sample size (n=X) adjacent to claim.",
-        relation: "contradicts",
-      },
-      {
-        title: "Independent Beauty Consumer Poll #2024",
-        subtitle: "AWARD CRITERIA: Brand was nominated in Regional category; national #1 claim is ungrounded.",
-        relation: "outdated",
-      },
-      {
-        title: "Biostatistical Clinical Trial Report #ST-99",
-        subtitle: "STATISTICAL SPEC: Trial p-value significance held for 4-week window, not 2-week window.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Homepage Hero Banner & Social Ads",
-        subtitle: "The '98% smoother' badge is featured prominently on homepage hero banners.",
-      },
-      {
-        title: "Customer Review Collateral Cards",
-        subtitle: "Unboxing inserts contain the #1 favorite clean skincare claim.",
-      },
-    ],
-  },
-  8: {
-    claims: [
-      {
-        text: "tested under dermatological and ophthalmological control",
-        sev: "high",
-        exp: "Eye-safety claims require clinical ophthalmologist evaluation protocols.",
-      },
-      {
-        text: "zero reported irritation in 48-hour human patch trials",
-        sev: "medium",
-        exp: "Absolute safety assertion ('zero irritation') requires full adverse event reporting disclosures.",
-      },
-      {
-        text: "recommended by 9 out of 10 skincare specialists",
-        sev: "low",
-        exp: "Professional recommendation ratios require documented survey participant accreditation.",
-      },
-    ],
-    facts: [
-      {
-        title: "Ophthalmological Safety Protocol Guide §404",
-        subtitle: "EYE SAFETY: Facial wash formulation tested for skin contact only; ocular clearance is missing.",
-        relation: "contradicts",
-      },
-      {
-        title: "Adverse Reaction Registry Spec Sheet",
-        subtitle: "TRIAL AUDIT: 1 mild erythema reaction was logged in trial #48-B; 'zero irritation' is inaccurate.",
-        relation: "outdated",
-      },
-      {
-        title: "Professional Aesthetician Survey Dossier",
-        subtitle: "SAMPLE AUDIT: Survey surveyed 20 local practitioners; national projection is unsubstantiated.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Medical Advisory & PR Press Kit",
-        subtitle: "Press releases sent to beauty editors claim ophthalmological testing.",
-      },
-      {
-        title: "Clinical Proof Section on Product Detail Pages",
-        subtitle: "The 9 out of 10 recommendation badge is live across digital channels.",
-      },
-    ],
-  },
-  9: {
-    claims: [
-      {
-        text: "Limited launch offer: 3-piece complete set for only $49",
-        sev: "high",
-        exp: "Promotional flash sale pricing requires explicit expiration date disclosure under FTC §233.",
-      },
-      {
-        text: "save 30% on seasonal autumn glow bundles",
-        sev: "medium",
-        exp: "Discount comparison requires that reference prices were actively offered for at least 30 days.",
-      },
-      {
-        text: "backed by 100% money-back satisfaction guarantee",
-        sev: "low",
-        exp: "Money-back guarantee requires accessible link or footnote detailing return shipping terms.",
-      },
-    ],
-    facts: [
-      {
-        title: "FTC Pricing Disclosure Guide 16 CFR §233",
-        subtitle: "PRICING RULE: Limited-time pricing claims must explicitly state promotional start and end dates.",
-        relation: "contradicts",
-      },
-      {
-        title: "Master SKU Pricing & Commercial Matrix",
-        subtitle: "COMMERCIAL SPEC: Reference bundle pricing was introduced 14 days ago, violating 30-day baseline rule.",
-        relation: "outdated",
-      },
-      {
-        title: "E-Commerce Return Policy Disclosure Terms",
-        subtitle: "LEGAL SPEC: Return shipping costs deducted from refund contradicts '100% money-back' promise.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Email Marketing Launch Blast & Retargeting",
-        subtitle: "Scheduled campaign promo email features the '$49 bundle' headline.",
-      },
-      {
-        title: "Paid Meta & Google Search Ad Copy",
-        subtitle: "Ad headlines advertise the 30% discount without promotional end dates.",
-      },
-    ],
-  },
-  10: {
-    claims: [
-      {
-        text: "100% recyclable, eco-friendly post-consumer packaging",
-        sev: "high",
-        exp: "Universal recyclable claim requires that recycling facilities are accessible to at least 60% of consumers.",
-      },
-      {
-        text: "cruelty-free and Leaping Bunny certified formulation",
-        sev: "medium",
-        exp: "Third-party certification trademarks require active corporate licensing agreement on file.",
-      },
-      {
-        text: "carbon-neutral delivery on all customer orders",
-        sev: "low",
-        exp: "Carbon offset claims must specify certified carbon credit registry and vintage year.",
-      },
-    ],
-    facts: [
-      {
-        title: "FTC Green Guides 16 CFR §260: Environmental Claims",
-        subtitle: "ENVIRONMENTAL RULE: Pumps and dropper caps are non-recyclable; '100% recyclable' violates Green Guides.",
-        relation: "contradicts",
-      },
-      {
-        title: "Cruelty Free International Licensing Registry",
-        subtitle: "TRADEMARK SPEC: Leaping Bunny application pending approval; packaging print run is premature.",
-        relation: "outdated",
-      },
-      {
-        title: "Carbon Offset Verification Certificate",
-        subtitle: "OFFSET AUDIT: Offset program applies to ground shipping only; air freight is not neutralized.",
-        relation: "no source",
-      },
-    ],
-    collateral: [
-      {
-        title: "Corporate Sustainability Factsheet & Annual Report",
-        subtitle: "Brand ESG report features the 100% recyclable packaging assertion.",
-      },
-      {
-        title: "Shipping Carton & Mailer Box Artwork",
-        subtitle: "Printed packaging mailer displays the carbon-neutral and Leaping Bunny logos.",
-      },
-    ],
-  },
-};
-
 export default function GraphView({
   findings: propsFindings,
   documentText: _propsDocText,
@@ -595,205 +125,203 @@ export default function GraphView({
   void _propsDocText;
   void _propsDocTitle;
 
-  const totalPagesCount = propsTotalPages || (propsPages ? propsPages.length : 10);
   const [selectedPage, setSelectedPage] = useState<number | "all">(propsCurrentPage);
 
-  // Read stored findings or props
+  // An explicitly supplied array (including []) belongs to the current document
+  // and must not be replaced with findings left in sessionStorage by another file.
   const allFindings = useMemo(() => {
-    if (Array.isArray(propsFindings) && propsFindings.length > 0) return propsFindings;
-    const saved = sessionStorage.getItem("current_findings");
-    if (saved) {
+    if (Array.isArray(propsFindings)) return propsFindings;
+    if (typeof window !== "undefined") {
       try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch {}
+        const saved = window.sessionStorage.getItem("current_findings");
+        const parsed = saved ? JSON.parse(saved) : null;
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // Invalid or unavailable session data is ignored; no sample findings are added.
+      }
     }
     return [];
   }, [propsFindings]);
 
-  // Construct dynamic graph topology based on the selected page or "all"
+  const highestFindingPage = allFindings.reduce((highest: number, finding: any) => {
+    const page = Number(finding?.page);
+    return Number.isInteger(page) && page > highest ? page : highest;
+  }, 1);
+  const totalPagesCount = Math.max(1, propsTotalPages || propsPages?.length || highestFindingPage);
+
+  // Build the graph only from actual findings and relationships supplied by the
+  // backend. Severity alone is not proof of a contradiction or an outdated fact.
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
     const nodes: NodeData[] = [];
     const edges: EdgeData[] = [];
-
-    if (selectedPage === "all") {
-      // FULL CAMPAIGN MESH ACROSS ALL PAGES
-      // Master Facts
-      nodes.push(
-        {
-          id: "fact-rule",
-          type: "fact",
-          category: "banned_rule",
-          technicalType: "COMPLIANCE CONSTRAINT · BANNED PHRASES",
-          title: "Brand Rulebook §4.2: Banned Absolutes",
-          subtitle: "Master policy restricting unqualified efficacy claims and puffery across all 10 collateral pages.",
-          x: 25,
-          y: 40,
-        },
-        {
-          id: "fact-clinical",
-          type: "fact",
-          category: "spec",
-          technicalType: "PRODUCT TECHNICAL SPEC · TIME MATRIX",
-          title: "Clinical Formulation Protocol Dossier #2024-B",
-          subtitle: "Master clinical protocol specification locking timeline claims across all campaign assets.",
-          x: 25,
-          y: 200,
-        },
-        {
-          id: "fact-cir",
-          type: "fact",
-          category: "pricing",
-          technicalType: "FORMULATION & INGREDIENT BENCHMARK",
-          title: "Cosmetic Ingredient Review (CIR) Master Spec",
-          subtitle: "Authoritative ingredient standard governing organic declarations across the product line.",
-          x: 25,
-          y: 360,
-        }
-      );
-
-      // Representative Claims across pages
-      [1, 2, 3, 4, 9, 10].forEach((pNum, idx) => {
-        const profile = PAGE_SPECIFIC_PROFILES[pNum] || PAGE_SPECIFIC_PROFILES[1];
-        const claim = profile.claims[0];
-        const claimId = `claim-p${pNum}-m1`;
-
-        nodes.push({
-          id: claimId,
-          page: pNum,
-          markerId: 1,
-          type: "claim",
-          category: claim.sev === "high" ? "conflict" : "stale",
-          technicalType: `EXTRACTED SPAN · CLAIM #1 (PAGE ${pNum})`,
-          title: `PAGE ${pNum}: '${claim.text}'`,
-          subtitle: claim.exp,
-          x: 265,
-          y: 35 + idx * 80,
-        });
-
-        const targetFact = idx % 2 === 0 ? "fact-rule" : "fact-clinical";
-        edges.push({
-          id: `edge-${targetFact}-${claimId}`,
-          sourceId: targetFact,
-          targetId: claimId,
-          relation: idx % 2 === 0 ? "contradicts" : "outdated",
-        });
+    const findingsInScope = allFindings
+      .map((finding: any, index: number) => ({ finding, index }))
+      .filter(({ finding }) => {
+        const pageValue = Number(finding?.page);
+        const page = Number.isInteger(pageValue) && pageValue > 0 ? pageValue : 1;
+        return selectedPage === "all" || page === selectedPage;
       });
 
-      // Campaign Collaterals
-      nodes.push(
-        {
-          id: "collateral-ads",
-          type: "collateral",
-          category: "collateral",
-          technicalType: "CAMPAIGN BLAST-RADIUS · PAID MEDIA",
-          title: "Paid Media Ad Banners & Social Flights",
-          subtitle: "Cross-campaign impact: 6 live creative flights require immediate claim updates.",
-          x: 505,
-          y: 110,
-        },
-        {
-          id: "collateral-packaging",
-          type: "collateral",
-          category: "collateral",
-          technicalType: "PACKAGING & PRINT · COLLATERAL",
-          title: "Master Product Packaging Artwork (All SKUs)",
-          subtitle: "Packaging batch printing scheduled for distribution affected by claims on Pages 1–4.",
-          x: 505,
-          y: 290,
+    const normalizeRelation = (value: unknown): EdgeData["relation"] | null => {
+      const relation = String(value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ");
+      if (["backs it", "supports", "supported by", "supports claim"].includes(relation)) return "backs it";
+      if (["contradicts", "contradiction", "conflicts with"].includes(relation)) return "contradicts";
+      if (["outdated", "out of date", "stale", "expired"].includes(relation)) return "outdated";
+      if (["no source", "unsourced", "missing source", "unverified source"].includes(relation)) return "no source";
+      if (["impacts collateral", "impact collateral", "affects collateral"].includes(relation)) return "impacts collateral";
+      return null;
+    };
+
+    const positiveInteger = (...values: unknown[]): number | undefined => {
+      for (const value of values) {
+        const number = Number(value);
+        if (value !== null && value !== undefined && value !== "" && Number.isInteger(number) && number > 0) {
+          return number;
         }
-      );
+      }
+      return undefined;
+    };
 
-      edges.push(
-        {
-          id: "edge-claim-p1-collateral-ads",
-          sourceId: "claim-p1-m1",
-          targetId: "collateral-ads",
-          relation: "impacts collateral",
-        },
-        {
-          id: "edge-claim-p2-collateral-packaging",
-          sourceId: "claim-p2-m1",
-          targetId: "collateral-packaging",
-          relation: "impacts collateral",
-        }
-      );
+    const safeId = (value: unknown, fallback: string) => {
+      const text = String(value ?? "").trim();
+      return text ? text.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 90) : fallback;
+    };
 
-      return { nodes, edges };
-    }
+    let claimRow = 0;
+    let factRow = 0;
+    let collateralRow = 0;
 
-    // SPECIFIC PAGE (1 through 10)
-    const pageNum = typeof selectedPage === "number" ? selectedPage : 1;
-    const pageProfile = PAGE_SPECIFIC_PROFILES[pageNum] || PAGE_SPECIFIC_PROFILES[1];
+    findingsInScope.forEach(({ finding, index }) => {
+      const flaggedText = String(finding?.flagged_text ?? finding?.claim_text ?? "").trim();
+      // Without an actual extracted span there is no claim node to display.
+      if (!flaggedText) return;
 
-    // 1. Facts for this specific page
-    pageProfile.facts.forEach((f, idx) => {
-      nodes.push({
-        id: `fact-p${pageNum}-${idx + 1}`,
-        type: "fact",
-        category: f.relation === "contradicts" ? "banned_rule" : f.relation === "outdated" ? "spec" : "pricing",
-        technicalType: idx === 0 ? "COMPLIANCE CONSTRAINT · BANNED RULE" : idx === 1 ? "TECHNICAL SPEC · TIME PROTOCOL" : "AUTHORITATIVE AUDIT STANDARD",
-        title: f.title,
-        subtitle: f.subtitle,
-        x: 25,
-        y: 40 + idx * 160,
-      });
-    });
+      const pageValue = Number(finding?.page);
+      const page = Number.isInteger(pageValue) && pageValue > 0 ? pageValue : 1;
+      const rawId = safeId(finding?.id ?? finding?.finding_id, `finding-${index + 1}`);
+      const claimId = `claim-${rawId}-${index}`;
+      const markerId = positiveInteger(finding?.marker_id, finding?.markerId);
+      const severity = String(finding?.severity ?? "").trim().toLowerCase();
+      const rawCategory = String(finding?.category ?? finding?.finding_type ?? finding?.type ?? "").trim().toLowerCase();
+      let category: NodeData["category"] = "match";
+      if (rawCategory.includes("conflict") || rawCategory.includes("contradict")) category = "conflict";
+      else if (rawCategory.includes("stale") || rawCategory.includes("outdated")) category = "stale";
+      else if (rawCategory.includes("ungrounded") || rawCategory.includes("unsourced") || rawCategory.includes("unsupported")) category = "ungrounded";
+      else if (rawCategory.includes("pricing")) category = "pricing";
+      else if (rawCategory.includes("spec")) category = "spec";
+      else if (rawCategory.includes("banned") || rawCategory.includes("rule")) category = "banned_rule";
 
-    // 2. Claims for this specific page (Checking if document findings exist, otherwise using page profile)
-    const pageStoredFindings = allFindings.filter((f) => f.page === pageNum);
-
-    pageProfile.claims.forEach((c, idx) => {
-      const claimId = `claim-p${pageNum}-m${idx + 1}`;
-      const matchingStored = pageStoredFindings[idx];
-      const claimText = matchingStored?.flagged_text || c.text;
-      const claimExplanation = matchingStored?.explanation || c.exp;
-      const claimSev = matchingStored?.severity || c.sev;
-
+      const claimY = 35 + claimRow * 145;
+      claimRow += 1;
       nodes.push({
         id: claimId,
-        page: pageNum,
-        markerId: idx + 1,
+        page,
+        ...(markerId ? { markerId } : {}),
         type: "claim",
-        category: claimSev === "high" ? "conflict" : claimSev === "medium" ? "stale" : "ungrounded",
-        technicalType: `EXTRACTED SPAN · CLAIM #${idx + 1} (PAGE ${pageNum})`,
-        title: claimSev === "high" ? `CONFLICT: '${claimText}'` : claimSev === "medium" ? `STALE / BLAST-RADIUS: '${claimText}'` : `NO APPROVED FACT: '${claimText}'`,
-        subtitle: claimExplanation,
+        category,
+        technicalType: `EXTRACTED SPAN · PAGE ${page}${severity ? ` · ${severity.toUpperCase()} SEVERITY` : ""}`,
+        title: flaggedText,
+        subtitle: String(finding?.explanation ?? finding?.reason ?? finding?.description ?? "No explanation was supplied for this finding."),
         x: 265,
-        y: 40 + idx * 160,
+        y: claimY,
       });
 
-      // Connect Fact -> Claim
-      const sourceFactId = `fact-p${pageNum}-${idx + 1}`;
-      edges.push({
-        id: `edge-${sourceFactId}-${claimId}`,
-        sourceId: sourceFactId,
-        targetId: claimId,
-        relation: pageProfile.facts[idx]?.relation || (idx === 0 ? "contradicts" : idx === 1 ? "outdated" : "no source"),
-      });
-    });
+      // A fact/rule node is shown only if the finding actually names one.
+      const factTitle = String(
+        finding?.rule_title ?? finding?.rule_name ?? finding?.source_title ??
+        finding?.evidence_title ?? finding?.policy_title ?? ""
+      ).trim();
+      const factSubtitle = String(
+        finding?.rule_text ?? finding?.source_text ?? finding?.approved_fact ??
+        finding?.evidence_text ?? finding?.policy_text ?? ""
+      ).trim();
+      const relation = normalizeRelation(finding?.relation ?? finding?.relationship);
+      let factId: string | undefined;
 
-    // 3. Collaterals for this specific page
-    pageProfile.collateral.forEach((col, idx) => {
-      const colId = `collateral-p${pageNum}-${idx + 1}`;
-      nodes.push({
-        id: colId,
-        type: "collateral",
-        category: "collateral",
-        technicalType: `CAMPAIGN BLAST-RADIUS (PAGE ${pageNum})`,
-        title: col.title,
-        subtitle: col.subtitle,
-        x: 505,
-        y: 110 + idx * 170,
-      });
+      if (factTitle) {
+        factId = `fact-${safeId(finding?.rule_id ?? finding?.source_id ?? factTitle, `finding-${index + 1}`)}-${index}`;
+        const factY = 35 + factRow * 145;
+        factRow += 1;
+        const factText = `${factTitle} ${factSubtitle}`.toLowerCase();
+        let factCategory: NodeData["category"] = "spec";
+        if (factText.includes("banned") || factText.includes("prohibit") || factText.includes("policy") || factText.includes("rule")) factCategory = "banned_rule";
+        else if (factText.includes("price") || factText.includes("discount") || factText.includes("cost")) factCategory = "pricing";
+        nodes.push({
+          id: factId,
+          page,
+          type: "fact",
+          category: factCategory,
+          technicalType: "SOURCE / RULE PROVIDED WITH FINDING",
+          title: factTitle,
+          subtitle: factSubtitle || "The finding references this source but provides no additional source text.",
+          x: 25,
+          y: factY,
+        });
+        // A relation edge is created only when the finding explicitly supplies
+        // a recognized relation and the corresponding source node exists.
+        if (relation) {
+          edges.push({
+            id: `edge-${factId}-${claimId}-${relation}`,
+            sourceId: factId,
+            targetId: claimId,
+            relation,
+          });
+        }
+      } else if (relation === "no source") {
+        // This is a missing-source status marker, not a fabricated evidence item.
+        factId = `missing-source-${claimId}`;
+        const factY = 35 + factRow * 145;
+        factRow += 1;
+        nodes.push({
+          id: factId,
+          page,
+          type: "fact",
+          category: "ungrounded",
+          technicalType: "SOURCE STATUS · MISSING EVIDENCE",
+          title: "Source not provided",
+          subtitle: "The finding is marked as missing a source; no supporting source was supplied.",
+          x: 25,
+          y: factY,
+        });
+        edges.push({
+          id: `edge-${factId}-${claimId}-no-source`,
+          sourceId: factId,
+          targetId: claimId,
+          relation: "no source",
+        });
+      }
 
-      // Connect Claim -> Collateral
-      const sourceClaimId = `claim-p${pageNum}-m${idx + 1}`;
-      edges.push({
-        id: `edge-${sourceClaimId}-${colId}`,
-        sourceId: sourceClaimId,
-        targetId: colId,
-        relation: "impacts collateral",
+      const collateralValue = finding?.impacted_collateral ?? finding?.impactedCollateral;
+      const collateralItems = Array.isArray(collateralValue)
+        ? collateralValue
+        : typeof collateralValue === "string" && collateralValue.trim()
+          ? [collateralValue]
+          : [];
+      collateralItems.forEach((item: any, collateralIndex: number) => {
+        const title = typeof item === "string"
+          ? item.trim()
+          : String(item?.title ?? item?.name ?? "").trim();
+        if (!title) return;
+        const collateralId = `collateral-${safeId(item?.id ?? title, `finding-${index + 1}-${collateralIndex + 1}`)}-${index}-${collateralIndex}`;
+        const collateralY = 35 + collateralRow * 145;
+        collateralRow += 1;
+        nodes.push({
+          id: collateralId,
+          page,
+          type: "collateral",
+          category: "collateral",
+          technicalType: "IMPACTED COLLATERAL · SOURCE DATA",
+          title,
+          subtitle: typeof item === "object" && item ? String(item?.description ?? item?.subtitle ?? "") : "",
+          x: 505,
+          y: collateralY,
+        });
+        edges.push({
+          id: `edge-${claimId}-${collateralId}`,
+          sourceId: claimId,
+          targetId: collateralId,
+          relation: "impacts collateral",
+        });
       });
     });
 
@@ -822,7 +350,7 @@ export default function GraphView({
   const [aiSource, setAiSource] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiAsked, setAiAsked] = useState<string | null>(null);
-  const [aiNote, setAiNote] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [aiHistory, setAiHistory] = useState<ChatTurn[]>([]); // conversation about the selected node
 
   function handleSelectNode(node: NodeData) {
@@ -831,7 +359,7 @@ export default function GraphView({
       setAiAnswer(null);
       setAiSource(null);
       setAiAsked(null);
-      setAiNote(null);
+      setAiError(null);
       setAiHistory([]);
       setAiQuestion("");
     }
@@ -870,7 +398,8 @@ export default function GraphView({
     if (!q || !q.trim()) return;
     setAiAsked(q.trim());
     setAiQuestion("");
-    setAiNote(null);
+    setAiError(null);
+    setAiSource(null);
     setAiLoading(true);
     setAiAnswer(null);
     try {
@@ -883,11 +412,12 @@ export default function GraphView({
       setAiHistory((h) => [...h, { role: "user", text: q.trim() }, { role: "ai", text: res.answer }]);
       setAiAnswer(res.answer);
       setAiSource(res.source || "AI Copilot");
-      const extra = res as { live?: boolean; reason?: string }; // extra fields from the backend
-      if (extra.live === false) setAiNote(extra.reason || "live Gemini is not connected");
-    } catch {
-      setAiAnswer("Could not reach the AI server. Make sure the Python backend is running, then ask again.");
-      setAiSource("Connection error");
+    } catch (error) {
+      setAiError(
+        error instanceof Error
+          ? error.message
+          : "The AI request failed. Check the backend configuration and try again."
+      );
     } finally {
       setAiLoading(false);
     }
@@ -1065,9 +595,10 @@ export default function GraphView({
           ref={canvasRef}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
           style={{
             position: "relative",
-            height: 540,
+            height: Math.max(540, ...nodes.map((node) => node.y + 140)),
             background: "radial-gradient(ellipse at 50% 50%, #0c112e 0%, #080a1c 100%)",
             border: "1px solid var(--border)",
             borderRadius: 16,
@@ -1279,7 +810,7 @@ export default function GraphView({
         </div>
 
         {/* ========================================================================= */}
-        {/* RIGHT: DOCKED GEMINI AI AUDIT COPILOT (ZERO OVERLAP!) */}
+        {/* RIGHT: DOCKED AI AUDIT COPILOT (ZERO OVERLAP!) */}
         {/* ========================================================================= */}
         {selectedNode && (
           <div
@@ -1305,7 +836,7 @@ export default function GraphView({
             >
               <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--cyan)" }}>
                 <Sparkles size={16} />
-                <span style={{ fontSize: 11, fontWeight: 800 }}>LIVE GEMINI AI AUDIT COPILOT</span>
+                <span style={{ fontSize: 11, fontWeight: 800 }}>LIVE AI AUDIT COPILOT</span>
               </div>
               <button
                 type="button"
@@ -1375,12 +906,16 @@ export default function GraphView({
                     }}
                   />
                   <p style={{ margin: 0, fontSize: 11, color: "var(--cyan)", fontWeight: 600 }}>
-                    Consulting Google Gemini Compliance Engine...
+                    Consulting the configured AI provider...
                   </p>
                   <p style={{ margin: "4px 0 0", fontSize: 10, color: "var(--muted)" }}>
                     Cross-referencing FTC §5, FDA rules & active brand dossier
                   </p>
                 </div>
+              ) : aiError ? (
+                <p role="alert" style={{ color: "#f5ce75", fontSize: 11, lineHeight: 1.5 }}>
+                  {aiError}
+                </p>
               ) : aiAnswer ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {aiHistory.slice(0, -2).map((turn, i) => (
@@ -1410,11 +945,6 @@ export default function GraphView({
                       </p>
                     )}
                     <p style={{ margin: 0 }}>{aiAnswer}</p>
-                    {aiNote && (
-                      <p style={{ margin: "8px 0 0", fontSize: 9.5, color: "#f5ce75" }}>
-                        ⚠ Preset answer, live Gemini is offline: {aiNote}
-                      </p>
-                    )}
                   </div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     {["Explain that more simply", "Give a concrete example", "Make it shorter"].map((p) => (
@@ -1436,7 +966,7 @@ export default function GraphView({
                     onClick={() => {
                       setAiAnswer(null);
                       setAiAsked(null);
-                      setAiNote(null);
+                      setAiError(null);
                       setAiHistory([]);
                       setAiQuestion("");
                     }}
@@ -1492,7 +1022,7 @@ export default function GraphView({
             <div style={{ display: "flex", gap: 6 }}>
               <input
                 type="text"
-                placeholder={aiAnswer ? "Ask a follow-up, e.g. explain it more simply..." : "Ask Gemini anything about this node..."}
+                placeholder={aiAnswer ? "Ask a follow-up, e.g. explain it more simply..." : "Ask the AI about this node..."}
                 value={aiQuestion}
                 onChange={(e) => setAiQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !aiLoading && handleAskAI()}

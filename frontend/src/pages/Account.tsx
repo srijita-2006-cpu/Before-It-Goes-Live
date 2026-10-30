@@ -1,11 +1,32 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { LogOut, Building2, User } from "lucide-react";
+import {
+  getAIStatus,
+  logoutAccount,
+  type AIStatusResult,
+  type AuthUser,
+  type Organization,
+} from "../api";
 
 interface AccountProps {
   darkMode: boolean;
   setDarkMode: (val: boolean) => void;
+  authUser?: AuthUser | null;
+  activeOrganization?: Organization | null;
+  organizations?: Organization[];
+  onSwitchOrganization?: (orgId: string) => Promise<void>;
+  onLogout?: () => void;
 }
 
-export default function Account({ darkMode, setDarkMode }: AccountProps) {
+export default function Account({
+  darkMode,
+  setDarkMode,
+  authUser,
+  activeOrganization,
+  organizations = [],
+  onSwitchOrganization,
+  onLogout,
+}: AccountProps) {
   // Brand dictionary terms stored
   const [dictionary, setDictionary] = useState<string[]>([
     "Bio-Matrix Delivery System",
@@ -14,6 +35,28 @@ export default function Account({ darkMode, setDarkMode }: AccountProps) {
     "Clinical Protocol #2024-B",
   ]);
   const [newTerm, setNewTerm] = useState("");
+  const [aiStatus, setAIStatus] = useState<AIStatusResult | null>(null);
+  const [aiStatusError, setAIStatusError] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [switchingOrg, setSwitchingOrg] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void getAIStatus()
+      .then((status) => {
+        if (active) setAIStatus(status);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setAIStatusError(
+            error instanceof Error ? error.message : "Could not read AI provider status."
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const addTerm = () => {
     if (!newTerm.trim()) return;
@@ -25,19 +68,97 @@ export default function Account({ darkMode, setDarkMode }: AccountProps) {
     setDictionary((prev) => prev.filter((t) => t !== term));
   };
 
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    try {
+      await logoutAccount();
+    } catch {
+      // ignore
+    } finally {
+      if (onLogout) onLogout();
+      setLoggingOut(false);
+    }
+  };
+
+  const handleOrgChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextId = e.target.value;
+    if (nextId && onSwitchOrganization) {
+      setSwitchingOrg(true);
+      try {
+        await onSwitchOrganization(nextId);
+      } finally {
+        setSwitchingOrg(false);
+      }
+    }
+  };
+
+  const isDemo = Boolean(activeOrganization?.is_demo || authUser?.is_demo);
+
   return (
     <div className="page" style={{ maxWidth: "860px", margin: "0 auto" }}>
       {/* Workspace Profile Header */}
-      <div className="profile-card">
-        <div className="profile-avatar">🛡️</div>
-        <div>
-          <h2>Brand Governance Workspace</h2>
-          <p className="muted">Organization: <strong>Before It Goes Live (Enterprise Team)</strong></p>
+      <div className="profile-card" style={{ marginBottom: "20px" }}>
+        <div className="profile-avatar">{isDemo ? "🔬" : "🛡️"}</div>
+        <div style={{ flex: 1 }}>
+          <h2>{activeOrganization?.name || "Brand Governance Workspace"}</h2>
+          <p className="muted" style={{ margin: "2px 0 0 0" }}>
+            User: <strong>{authUser?.full_name || authUser?.email || "Administrator"}</strong>
+            {authUser?.email && ` (${authUser.email})`}
+            {" · "}Role: <strong style={{ textTransform: "capitalize" }}>{activeOrganization?.role || "Owner"}</strong>
+          </p>
         </div>
-        <span className="pill" style={{ marginLeft: "auto" }}>
-          COMPLIANCE PRO TIER
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginLeft: "auto" }}>
+          {isDemo ? (
+            <span
+              className="pill"
+              style={{
+                background: "rgba(198, 244, 91, 0.15)",
+                color: "var(--lime)",
+                borderColor: "rgba(198, 244, 91, 0.35)",
+              }}
+            >
+              DEMO WORKSPACE · SAMPLE DATA
+            </span>
+          ) : (
+            <span className="pill">COMPLIANCE PRO TIER</span>
+          )}
+        </div>
       </div>
+
+      {/* Organization Switcher if user has multiple orgs */}
+      {organizations.length > 1 && (
+        <div className="settings-panel" style={{ marginBottom: "20px" }}>
+          <span className="eyebrow">ACTIVE TENANT WORKSPACE</span>
+          <div className="setting-row">
+            <div className="setting-icon">
+              <Building2 size={18} />
+            </div>
+            <div className="setting-copy">
+              <strong>Switch Brand Workspace</strong>
+              <span className="muted">You are a member of {organizations.length} workspaces</span>
+            </div>
+            <select
+              value={activeOrganization?.id || ""}
+              onChange={handleOrgChange}
+              disabled={switchingOrg}
+              style={{
+                padding: "8px 12px",
+                borderRadius: "8px",
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                color: "var(--text)",
+                fontSize: "12px",
+              }}
+            >
+              {organizations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name} {org.is_demo ? "(Demo Sandbox)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
 
       {/* AI Engine Status */}
       <div className="settings-panel" style={{ marginBottom: "20px" }}>
@@ -45,11 +166,29 @@ export default function Account({ darkMode, setDarkMode }: AccountProps) {
         <div className="setting-row">
           <div className="setting-icon">🤖</div>
           <div className="setting-copy">
-            <strong>Google Gemini 2.0 Flash</strong>
-            <span className="muted">Live multimodal reasoning & compliance grounding</span>
+            <strong>
+              {aiStatus?.key_configured && aiStatus.provider && aiStatus.model
+                ? `${aiStatus.provider[0].toUpperCase()}${aiStatus.provider.slice(1)} · ${aiStatus.model}`
+                : aiStatus
+                  ? "AI provider not configured"
+                  : "Checking AI provider..."}
+            </strong>
+            <span className="muted">
+              {aiStatusError ||
+                aiStatus?.configuration_error ||
+                (aiStatus
+                  ? `${aiStatus.primary_provider || "gemini"} primary · ${aiStatus.fallback_provider || "groq"} fallback`
+                  : "Reading provider selection from the backend")}
+            </span>
           </div>
-          <span style={{ color: "var(--lime)", fontWeight: 700, fontSize: "12px" }}>
-            ONLINE & ACTIVE
+          <span
+            style={{
+              color: aiStatus?.key_configured ? "var(--lime)" : "#f5ce75",
+              fontWeight: 700,
+              fontSize: "12px",
+            }}
+          >
+            {aiStatusError ? "STATUS UNAVAILABLE" : aiStatus?.key_configured ? "ONLINE" : aiStatus ? "SETUP REQUIRED" : "CHECKING"}
           </span>
         </div>
       </div>
@@ -113,7 +252,7 @@ export default function Account({ darkMode, setDarkMode }: AccountProps) {
       </div>
 
       {/* Theme Settings */}
-      <div className="settings-panel">
+      <div className="settings-panel" style={{ marginBottom: "20px" }}>
         <span className="eyebrow">DISPLAY PREFERENCES</span>
         <div className="setting-row" style={{ border: 0 }}>
           <div className="setting-icon">🌓</div>
@@ -127,6 +266,39 @@ export default function Account({ darkMode, setDarkMode }: AccountProps) {
             onClick={() => setDarkMode(!darkMode)}
           >
             Switch to {darkMode ? "Light" : "Dark"} Mode
+          </button>
+        </div>
+      </div>
+
+      {/* Account Session & Sign Out */}
+      <div className="settings-panel">
+        <span className="eyebrow">SESSION MANAGEMENT</span>
+        <div className="setting-row" style={{ border: 0 }}>
+          <div className="setting-icon">
+            <User size={18} />
+          </div>
+          <div className="setting-copy">
+            <strong>Active Session</strong>
+            <span className="muted">
+              Signed in as {authUser?.email || "Authenticated User"}. Secure HTTP-only cookie.
+            </span>
+          </div>
+          <button
+            className="secondary-button"
+            style={{
+              minHeight: "34px",
+              fontSize: "12px",
+              color: "#f87171",
+              borderColor: "rgba(239, 68, 68, 0.3)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+            disabled={loggingOut}
+            onClick={handleLogout}
+          >
+            <LogOut size={14} />
+            {loggingOut ? "Signing out..." : "Sign Out"}
           </button>
         </div>
       </div>

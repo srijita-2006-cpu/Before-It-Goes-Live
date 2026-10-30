@@ -9,8 +9,8 @@ import {
   Sparkles,
   Search,
   X,
-  Trash2,
 } from "lucide-react";
+import { fetchActivityHistory } from "../api.ts";
 
 type ActivityItem = {
   id: string | number;
@@ -19,171 +19,57 @@ type ActivityItem = {
   created_at: string;
   total_findings: number;
   resolved_findings: number;
-  status: "Approved" | "In Review" | "Clean";
+  status: "Approved" | "In Review";
   preview: string;
 };
 
-const STORAGE_KEY = "b4live_audit_ledger";
+type ActivityProps = { onStartReview: () => void };
 
-const fallbackHistory: ActivityItem[] = [
-  {
-    id: "doc-101",
-    filename: "Spring_Hero_Ad_Copy.txt",
-    file_type: "text",
-    created_at: "Today at 19:45",
-    total_findings: 3,
-    resolved_findings: 3,
-    status: "Approved",
-    preview:
-      "Radiance redefined: organic botanical blend with pure skin vitality. Formulated without parabens or synthetics...",
-  },
-  {
-    id: "doc-102",
-    filename: "AuraGlo_Launch_Catalog.pdf",
-    file_type: "pdf",
-    created_at: "Today at 17:20",
-    total_findings: 3,
-    resolved_findings: 2,
-    status: "In Review",
-    preview:
-      "Multi-page product specifications. Clinically proven to support natural skin renewal over continuous use...",
-  },
-  {
-    id: "doc-103",
-    filename: "Q3_Executive_Presentation.pptx",
-    file_type: "pptx",
-    created_at: "Yesterday at 16:10",
-    total_findings: 2,
-    resolved_findings: 2,
-    status: "Approved",
-    preview:
-      "[Slide 1] Project AuraGlo Reveal [Slide 2] Clinical dossier #2024-B confirms improvement at 28 days...",
-  },
-];
-
-function getStoredLedger(): ActivityItem[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch {}
-  return [];
-}
-
-function saveStoredLedger(items: ActivityItem[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-  } catch {}
-}
-
-export default function Activity() {
+export default function Activity({ onStartReview }: ActivityProps) {
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [filter, setFilter] = useState<"All" | "Approved" | "In Review">("All");
   const [search, setSearch] = useState("");
   const [inspectItem, setInspectItem] = useState<ActivityItem | null>(null);
 
-  useEffect(() => {
-    async function loadActivity() {
-      setLoading(true);
-
-      const savedLedger = getStoredLedger();
-      const currentFilename = sessionStorage.getItem("current_filename");
-      let sessionItem: ActivityItem | null = null;
-
-      if (currentFilename) {
-        const fileType =
-          sessionStorage.getItem("current_file_type") ||
-          (currentFilename.match(/\.(png|jpg|jpeg|webp)$/i)
-            ? "image"
-            : currentFilename.match(/\.pdf$/i)
-            ? "pdf"
-            : "text");
-
-        let totalFindings = 3;
-        let resolvedFindings = 0;
-
-        const rawFindings = sessionStorage.getItem("current_findings");
-        if (rawFindings) {
-          try {
-            const parsed = JSON.parse(rawFindings);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              totalFindings = parsed.length;
-              resolvedFindings = parsed.filter(
-                (f: any) => f.status === "resolved" || f.status === "dismissed"
-              ).length;
-            }
-          } catch {}
-        }
-
-        const isAllResolved = resolvedFindings >= totalFindings;
-        const docText = sessionStorage.getItem("current_doc_text") || "";
-        const preview =
-          fileType === "image"
-            ? "Visual ad creative scanned. Claims audited against FTC Green Guides §260, Endorsement §255, and FDA cosmetic rules."
-            : docText.slice(0, 160).replace(/[\r\n]+/g, " ") +
-              (docText.length > 160 ? "..." : "");
-
-        sessionItem = {
-          id: `audit-${currentFilename.replace(/[^a-zA-Z0-9]/g, "_")}`,
-          filename: currentFilename,
+  const loadActivity = async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const data = await fetchActivityHistory();
+      const documents = Array.isArray(data?.documents) ? data.documents : [];
+      setItems(documents.map((document: any): ActivityItem => {
+        const contentType = String(document.content_type || "");
+        const extension = document.filename?.split(".").pop()?.toLowerCase();
+        const fileType = extension && ["pdf", "pptx", "docx", "csv", "md", "txt"].includes(extension)
+          ? extension
+          : contentType.startsWith("image/") ? "image" : "file";
+        const status = document.status === "Compliant" && Number(document.unresolved_count) === 0
+          ? "Approved"
+          : "In Review";
+        const preview = String(document.text_content || "").replace(/[\r\n]+/g, " ").trim();
+        return {
+          id: document.id,
+          filename: document.filename || "Untitled upload",
           file_type: fileType,
-          created_at: `Today at ${new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}`,
-          total_findings: totalFindings,
-          resolved_findings: resolvedFindings,
-          status: isAllResolved
-            ? "Approved"
-            : resolvedFindings > 0
-            ? "In Review"
-            : "In Review",
-          preview: preview || "Audited marketing collateral copy.",
+          created_at: document.created_at || "",
+          total_findings: Number(document.total_findings) || 0,
+          resolved_findings: Number(document.resolved_findings) || 0,
+          status,
+          preview: preview.slice(0, 160) + (preview.length > 160 ? "…" : ""),
         };
-      }
-
-      let backendItems: ActivityItem[] = [];
-      try {
-        const res = await fetch("http://127.0.0.1:8000/api/activity");
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.activity)) {
-            backendItems = data.activity;
-          }
-        }
-      } catch (err) {
-        console.warn("Backend loading error, merging local audit history:", err);
-      }
-
-      const map = new Map<string, ActivityItem>();
-      fallbackHistory.forEach((item) => map.set(item.filename, item));
-      backendItems.forEach((item) => map.set(item.filename, item));
-      savedLedger.forEach((item) => map.set(item.filename, item));
-      if (sessionItem) {
-        map.set(sessionItem.filename, sessionItem);
-      }
-
-      const merged = Array.from(map.values());
-      setItems(merged);
-      saveStoredLedger(merged);
+      }));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load activity history. Check the backend connection and retry.");
+    } finally {
       setLoading(false);
     }
-    loadActivity();
-  }, []);
-
-  const handleClearHistory = () => {
-    if (
-      window.confirm(
-        "Clear saved local audit history? Baseline records will remain."
-      )
-    ) {
-      localStorage.removeItem(STORAGE_KEY);
-      setItems(fallbackHistory);
-    }
   };
+
+  useEffect(() => {
+    void loadActivity();
+  }, []);
 
   const filteredItems = items.filter((item) => {
     const matchesFilter = filter === "All" || item.status === filter;
@@ -238,26 +124,6 @@ export default function Activity() {
           <span className="demo-badge">
             LIVE AUDIT HISTORY ({items.length} TOTAL)
           </span>
-          {items.length > 3 && (
-            <button
-              onClick={handleClearHistory}
-              title="Clear Local History"
-              style={{
-                background: "transparent",
-                border: "1px solid var(--border)",
-                borderRadius: "8px",
-                padding: "4px 8px",
-                color: "#94a3b8",
-                cursor: "pointer",
-                fontSize: "11px",
-                display: "flex",
-                alignItems: "center",
-                gap: "4px",
-              }}
-            >
-              <Trash2 size={12} /> Clear
-            </button>
-          )}
         </div>
       </div>
 
@@ -316,13 +182,34 @@ export default function Activity() {
 
       {loading ? (
         <p className="muted">Loading audit records...</p>
+      ) : loadError ? (
+        <div className="empty-state" role="alert">
+          <div className="empty-icon"><AlertTriangle size={28} /></div>
+          <h2>Activity history could not be loaded</h2>
+          <p>{loadError}</p>
+          <button type="button" className="secondary-button" onClick={() => void loadActivity()}>
+            Retry loading history
+          </button>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Clock size={28} /></div>
+          <h2>No activity history yet</h2>
+          <p>Completed reviews will appear here after the backend saves them.</p>
+          <button type="button" className="primary-button" onClick={onStartReview}>
+            Start a review
+          </button>
+        </div>
       ) : filteredItems.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon">
             <Clock size={28} />
           </div>
           <h2>No matching audits found</h2>
-          <p>No audit logs match your search filter.</p>
+          <p>No saved audits match the selected search and status filters.</p>
+          <button type="button" className="secondary-button" onClick={() => { setSearch(""); setFilter("All"); }}>
+            Clear search and filters
+          </button>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -566,7 +453,7 @@ export default function Activity() {
               >
                 <span className="muted">Digital Audit Hash:</span>
                 <code style={{ color: "var(--cyan)", fontSize: 11 }}>
-                  b4live_{String(inspectItem.id).replace("-", "")}_verified
+                  {inspectItem.id}
                 </code>
               </div>
             </div>
