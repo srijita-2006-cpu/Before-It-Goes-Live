@@ -85,28 +85,47 @@ async def reject_oversized_requests(request: Request, call_next):
             return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
     return await call_next(request)
 
+@app.get("/")
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "app": "Before It Goes Live", "version": "3.4.0"}
 
+cors_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "https://before-it-goes-live-i6os.vercel.app",
+    "https://before-it-goes-live.vercel.app",
+]
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url and frontend_url not in cors_origins:
+    cors_origins.append(frontend_url.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https?://([a-zA-Z0-9-]+\.)*vercel\.app$|^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def _set_auth_cookie(response: Response, key: str, value: str, httponly: bool = True, max_age: int = 7 * 24 * 3600):
+    is_prod = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production")
+    response.set_cookie(
+        key=key,
+        value=value,
+        httponly=httponly,
+        samesite="none" if is_prod else "lax",
+        secure=is_prod,
+        max_age=max_age,
+    )
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -2415,22 +2434,8 @@ def register_user(payload: RegisterRequest, response: Response):
             raise HTTPException(status_code=409, detail=str(exc))
 
         sess = auth.create_session(conn, user["id"])
-        response.set_cookie(
-            key="session_id",
-            value=sess["session_id"],
-            httponly=True,
-            samesite="lax",
-            secure=False,
-            max_age=7 * 24 * 3600,
-        )
-        response.set_cookie(
-            key="csrf_token",
-            value=sess["csrf_token"],
-            httponly=False,
-            samesite="lax",
-            secure=False,
-            max_age=7 * 24 * 3600,
-        )
+        _set_auth_cookie(response, "session_id", sess["session_id"], httponly=True)
+        _set_auth_cookie(response, "csrf_token", sess["csrf_token"], httponly=False)
 
         return {
             "status": "success",
@@ -2463,30 +2468,10 @@ def login_user(payload: LoginRequest, response: Response):
         orgs = auth.get_user_organizations(conn, user["id"])
         active_org = orgs[0] if orgs else None
 
-        response.set_cookie(
-            key="session_id",
-            value=sess["session_id"],
-            httponly=True,
-            samesite="lax",
-            secure=False,
-            max_age=7 * 24 * 3600,
-        )
-        response.set_cookie(
-            key="csrf_token",
-            value=sess["csrf_token"],
-            httponly=False,
-            samesite="lax",
-            secure=False,
-            max_age=7 * 24 * 3600,
-        )
+        _set_auth_cookie(response, "session_id", sess["session_id"], httponly=True)
+        _set_auth_cookie(response, "csrf_token", sess["csrf_token"], httponly=False)
         if active_org:
-            response.set_cookie(
-                key="org_id",
-                value=active_org["id"],
-                httponly=False,
-                samesite="lax",
-                max_age=7 * 24 * 3600,
-            )
+            _set_auth_cookie(response, "org_id", active_org["id"], httponly=False)
 
         return {
             "status": "success",
@@ -2572,10 +2557,10 @@ async def verify_google_login(payload: GoogleVerifyRequest, response: Response):
         orgs = auth.get_user_organizations(conn, user["id"])
         active_org = orgs[0] if orgs else None
 
-        response.set_cookie(key="session_id", value=sess["session_id"], httponly=True, samesite="lax", max_age=7*24*3600)
-        response.set_cookie(key="csrf_token", value=sess["csrf_token"], httponly=False, samesite="lax", max_age=7*24*3600)
+        _set_auth_cookie(response, "session_id", sess["session_id"], httponly=True)
+        _set_auth_cookie(response, "csrf_token", sess["csrf_token"], httponly=False)
         if active_org:
-            response.set_cookie(key="org_id", value=active_org["id"], httponly=False, samesite="lax", max_age=7*24*3600)
+            _set_auth_cookie(response, "org_id", active_org["id"], httponly=False)
 
         return {
             "status": "success",
