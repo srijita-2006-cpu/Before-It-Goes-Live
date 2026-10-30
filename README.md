@@ -118,7 +118,7 @@ flowchart TD
 
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons
 - **Backend**: Python 3.11+, FastAPI, Uvicorn, Python-Multipart, SQLite
-- **AI Engine**: Centralized Google Gemini (`gemini-2.5-flash` / `gemini-3.1-flash-lite`) primary with Groq (`qwen/qwen3.8-27b`) fallback
+- **AI Engine**: Centralized Google Gemini (`gemini-3.8-flash`) primary with Groq (`qwen/qwen3.8-27b`) fallback
 - **Design System**: Dark glassmorphic interface with reactive SVG connectors
 - **Deployment**: Vercel (Frontend SPA) + Render (FastAPI Web Service)
 
